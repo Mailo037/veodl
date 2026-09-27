@@ -1,5 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { styleText } from './progress.js';
+import { styleText, terminalText, terminalTitle } from './progress.js';
+import { linkOutputPaths } from './path-links.js';
+import { terminalColumns } from './terminal-size.js';
 
 const settings = new AsyncLocalStorage();
 export const withOutputSettings = (enabled, work) => settings.run({ enabled }, work);
@@ -26,6 +28,15 @@ export function formatOutput(text, stream, enabled = settings.getStore()?.enable
   return text.split(/(\r?\n)/).map(line => {
     if (!line.trim() || /\x1b/.test(line)) return line;
     const value = line.trim();
+    const original = line;
+    // Limit display values, keeping help, JSON/config text and runnable commands intact.
+    if (stream.isTTY) {
+      const indent = line.match(/^\s*/)[0];
+      const available = { isTTY: true, columns: Math.max(2, terminalColumns(stream) - indent.length) };
+      if (/^\d+\. /.test(value)) line = terminalTitle(available, value).split('\n').map(part => indent + part).join('\n');
+      else if (/^(?:URL[s]?:|Saved:|Would save:|File:|Missing:|Output:|Job:|Error:|Profile:|Media:|Format:|Streams:|Source:|Title:|Command directory:|Config OK:|veo:|\[?(?:OK|FAIL)\]?\s|[0-9a-z]{6}\s+\d+\s|https?:\/\/)/.test(value)
+        || /^\s{6,}\S/.test(line)) line = indent + terminalText(available, value);
+    }
     let role = 'muted';
     if (/^(?:veo (?:stats|history|runs|stop|doctor|flush|update|backend|alias|uninstall)\b|veo \d[^ ]* doctor|ID\s+PID\s+STATE|Usage:|Options:|Commands:|Examples:|\d+\. )/.test(value)) role = 'title';
     if (/^(?:\[?OK\]?\s|Saved:|Flushed:|Stopped\b|Removed\b|Config OK:|Statistics reset|Managed tools are ready)|\bis up to date\b|\bupdated to\b|\binstalled and will be used\b/i.test(value)) role = 'success';
@@ -37,20 +48,24 @@ export function formatOutput(text, stream, enabled = settings.getStore()?.enable
     if (/^No problems found/.test(value)) role = 'success';
     if (/^Config reset:/.test(value)) role = 'success';
     if (/^Summary:/.test(value)) role = /\b[1-9]\d* failed\b|cancelled/.test(value) ? 'error' : 'success';
-    return styleText(stream, line, role, enabled);
+    return styleText(stream, linkOutputPaths(stream, original, line), role, enabled);
   }).join('');
 }
 
 // Wrap only application-owned prose; no global stream monkey-patching.
 export function outputStream(stream, { enabled = settings.getStore()?.enabled !== false, plain = false } = {}) {
-  if (plain || !enabled || !stream.isTTY) return stream;
+  if (plain || !stream.isTTY) return stream;
   return {
     isTTY: stream.isTTY,
-    get columns() { return stream.columns; },
+    get columns() { return terminalColumns(stream); },
     on(event, listener) { stream.on?.(event, listener); },
     removeListener(event, listener) { stream.removeListener?.(event, listener); },
     write(chunk, ...args) {
       if (typeof chunk !== 'string') return stream.write(chunk, ...args);
+      // Live redraw frames already carry erase/cursor sequences; prose fitting
+      // and role styling must not touch them, otherwise the invisible styling
+      // bytes push raw lines past the terminal width.
+      if (chunk.includes('\x1b')) return stream.write(chunk, ...args);
       return stream.write(formatOutput(chunk, stream, enabled), ...args);
     },
   };

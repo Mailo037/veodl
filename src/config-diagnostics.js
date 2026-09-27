@@ -64,7 +64,7 @@ function valueChoices(key, config = {}) {
   if (key === 'format') return config.audio ? AUDIO_FORMATS : VIDEO_FORMATS;
   if (key === 'timeout') return ['30s', '45s', '1m', '2m', '5m'];
   if (['concurrentDownloads', 'playlistConcurrency'].includes(key)) return [1, 2, 3, 4];
-  if (key === 'concurrentFragments') return Array.from({ length: 16 }, (_, i) => i + 1);
+  if (key === 'concurrentFragments') return Array.from({ length: 64 }, (_, i) => i + 1);
   return [];
 }
 

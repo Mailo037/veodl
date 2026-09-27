@@ -11,7 +11,7 @@ export const SOURCE_OPTIONS_GUIDE = String.raw`// veo: source discovery options 
 // Command-line flags override these values, including --no-deep-scan and --no-list-sources.
 `;
 
-const PROFILE_OPTIONS_MARKER = '// veo: profile download options v4';
+const PROFILE_OPTIONS_MARKER = '// veo: profile download options v5';
 export const PROFILE_OPTIONS_GUIDE = String.raw`${PROFILE_OPTIONS_MARKER}
 // Any global option can also be placed inside a profile.
 // Copy the settings you want into "profiles" > "default" or a named profile.
@@ -20,7 +20,10 @@ export const PROFILE_OPTIONS_GUIDE = String.raw`${PROFILE_OPTIONS_MARKER}
 // "quality": "best",
 // "concurrentDownloads": 2,    // Parallel URLs/batch items: 1-4; default 2
 // "adaptiveConcurrency": true, // Reduce parallelism and retry transient errors
-// "concurrentFragments": 8,    // DASH/HLS fragments: 1-16; default 8
+// "concurrentFragments": 8,    // DASH/HLS fragments: 1-64; default 8
+// Values 17-64 are experimental and require terminal confirmation before download.
+// "experimentalFragments": false, // true explicitly accepts 17-64, including in scripts
+// More connections may trigger server limits and do not guarantee better speed.
 // "deepScan": true,           // Check every observed source candidate
 // "timeout": "2m",           // Source-search deadline, 5s to 10m
 // "listSources": false,      // List sources and exit for one URL
@@ -80,7 +83,9 @@ const TEMPLATE_SOURCE = String.raw`${TEMPLATE_MARKER}
   // "open": false,              // Open the completed file automatically
   // "resume": true,             // Resume interrupted downloads
   // "skipExisting": true,       // Skip previously saved downloads
-  // "concurrentFragments": 8,   // Concurrent fragments: 1 to 16; default 8
+  // "concurrentFragments": 8,   // Concurrent fragments: 1 to 64; default 8
+  // Values above 16 require confirmation or the explicit opt-in below.
+  // "experimentalFragments": false, // true accepts experimental values 17-64
   // "cookies": "D:/cookies.txt", // Netscape-format cookies file
   // "cookiesFromBrowser": "firefox", // Use your browser's cookies
   // "sponsorblockRemove": "sponsor", // Remove matching SponsorBlock segments

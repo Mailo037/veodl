@@ -47,7 +47,7 @@ test('semantic errors locate properties and values without matching comments or 
     ['\uFEFF{/*comment*/"Qual\\u0069ty":"best"}', '"Qual\\u0069ty"', /Did you mean "quality"/, 1],
     ['{"profiles":{"profiles":{"audio":"yes"}}}', '"yes"', /boolean/, 1],
     ['{"profiles":[]}', '[]', /must be an object/, 1],
-    ['{"concurrentFragments":17}', '17', /between 1 and 16/, 1],
+    ['{"concurrentFragments":65}', '65', /between 1 and 64/, 1],
     ['{"timeout":"2weeks"}', '"2weeks"', /--timeout expects seconds/, 1],
     ['{"profiles":{"scan":{"timeout":"4s"}}}', '"4s"', /Profile "scan".*between 5 seconds/, 1],
     ['{"activeProfile":"missing","profiles":{"default":{}}}', '"missing"', /Unknown active profile/, 1],

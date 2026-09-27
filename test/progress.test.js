@@ -8,6 +8,75 @@ import { EventEmitter } from 'node:events';
 
 const data = { stream: 'Media', downloaded_bytes: 90 * 1024 ** 2, total_bytes_estimate: 1024 ** 3, speed: 12.6 * 1024 ** 2, eta: 77 };
 
+test('narrow progress keeps the bar and every statistic below it', () => {
+  for (const columns of [10, 20, 30, 40, 60]) {
+    const result = formatProgress(data, { columns, prefix: 'Media' });
+    const joined = result.replace(/\n/g, '');
+    assert.match(joined, /\[[=-]+\]/);
+    assert.ok(joined.includes('~9%'));
+    assert.ok(joined.includes('12.6 MiB/s'));
+    assert.ok(joined.includes('90.0 MiB / ~1.0 GiB'));
+    assert.ok(joined.includes('ETA 1:17'));
+    for (const line of result.split('\n')) assert.ok(line.length <= columns);
+    assert.ok(result.indexOf('[') < result.indexOf('12.6'));
+  }
+});
+
+test('multiline updates erase all previous live rows without touching preceding logs', () => {
+  const output = { isTTY: true, columns: 40, text: '', write(value) { this.text += value; } };
+  const reporter = createReporter(output, { setTitle() {} });
+  try {
+    reporter.item(1, 1, 'Original title');
+    reporter.progress(data);
+    output.text = '';
+    reporter.progress({ ...data, downloaded_bytes: 100 * 1024 ** 2 });
+    assert.ok(output.text.startsWith('\r\x1b[2K\x1b[J'));
+    assert.ok(!output.text.includes('Original title'));
+    assert.ok(output.text.includes('100.0 MiB'));
+  } finally { reporter.finish(); }
+});
+
+test('resize never rewrites prior titles and logs using guessed cursor positions', async () => {
+  const output = { isTTY: true, columns: 120, text: '', write(value) { this.text += value; } };
+  const reporter = createReporter(output, { setTitle() {} });
+  reporter.configure({ color: false });
+  const title = 'Title' + 'x'.repeat(200);
+  try {
+    reporter.item(1, 1, title);
+    reporter.status('Size unknown; continuing.');
+    output.text = '';
+    output.columns = 40;
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(output.text, '');
+    output.text = '';
+    output.columns = 120;
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(output.text, '');
+  } finally { reporter.finish(); }
+});
+
+test('size polling redraws without resize events and clears wrapped remnants before growing', async () => {
+  const output = { isTTY: true, columns: 120, text: '', write(value) { this.text += value; } };
+  const reporter = createReporter(output, { setTitle() {} });
+  try {
+    reporter.progress(data);
+    output.text = '';
+    output.columns = 30;
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.ok(output.text.startsWith('\r\x1b[2K\x1b[J'));
+    for (const line of output.text.split('\r\x1b[2K').at(-1).replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < 30);
+    output.text = '';
+    output.columns = 120;
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.ok(output.text.includes('\x1b[J'));
+    assert.ok(output.text.split('\r\x1b[2K').at(-1).includes('ETA'));
+  } finally { reporter.finish(); }
+  const finished = output.text;
+  output.columns = 40;
+  await new Promise(resolve => setTimeout(resolve, 220));
+  assert.equal(output.text, finished);
+});
+
 test('resize redraws live progress without backend updates and restores fitting titles', () => {
   const output = Object.assign(new EventEmitter(), { isTTY: true, columns: 120, text: '', write(value) { this.text += value; } });
   const reporter = createReporter(outputStream(output), { setTitle() {} });
@@ -17,7 +86,7 @@ test('resize redraws live progress without backend updates and restores fitting 
   output.columns = 40;
   output.emit('resize');
   const narrow = output.text.split('\r\x1b[2K').at(-1);
-  assert.ok(narrow.length < 40);
+  for (const line of narrow.split('\r\n')) assert.ok(line.length < 40);
   assert.ok(narrow.includes('…'));
   output.columns = 120;
   output.emit('resize');
@@ -87,14 +156,12 @@ test('Termux progress stays within the terminal and reuses one line across resiz
   const wrapped = outputStream(output);
   const reporter = createReporter(wrapped, { setTitle() {} });
   reporter.progress(data);
-  const headerLines = output.text.split('\n').length;
   for (const columns of [60, 40, 32, 20, 10, 80, 120]) {
     output.columns = columns;
     assert.equal(wrapped.columns, columns);
     for (let index = 0; index < 10; index++) reporter.progress({ ...data, downloaded_bytes: data.downloaded_bytes + index });
     const lastLine = output.text.split('\r\x1b[2K').at(-1);
-    assert.ok(lastLine.length < columns, `${columns}: ${lastLine}`);
-    assert.equal(output.text.split('\n').length, headerLines);
+    for (const line of lastLine.replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < columns, `${columns}: ${line}`);
   }
   reporter.finish();
   assert.ok(output.text.endsWith('\r\x1b[2K'));
@@ -114,8 +181,7 @@ test('parallel progress shares a compact live line and handles wide titles', () 
   const first = reporter.scoped(1, 2, '🎥日本語'.repeat(20));
   const second = reporter.scoped(2, 2, 'Second');
   for (let index = 0; index < 20; index++) { first.progress(data); second.progress(data); }
-  assert.equal(output.text.includes('\n'), false);
-  for (const line of output.text.split('\r\x1b[2K').filter(Boolean)) assert.ok(line.length < 40);
+  for (const frame of output.text.split('\r\x1b[2K').filter(Boolean)) for (const line of frame.replace(/\x1b\[[0-9;]*[AJ]/g, '').split('\r\n')) assert.ok(line.length < 40);
   assert.match(output.text, /\[1\/2\]/);
   assert.match(output.text, /\[2\/2\]/);
 });

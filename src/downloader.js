@@ -324,6 +324,16 @@ export async function previewPath(directory, title, extension, { exists = async 
   }
 }
 
+/** Summarize source resolutions without downloading media. */
+export async function listQualities(options, { signal, backendResolver = resolveBackend, runner = runBackend, reporter } = {}) {
+  const backend = await prepareBackend(options, { signal, backendResolver, reporter });
+  const metadata = await fetchMetadata({ ...options, playlist: false }, { signal, backend, runner, reporter });
+  const formats = (metadata.formats || [metadata]).filter(format => format && format.vcodec !== 'none' && !format.has_drm && format.ext !== 'mhtml' && format.protocol !== 'mhtml');
+  if (!formats.length) throw new Error('No downloadable video formats found.');
+  const qualities = availableHeights(formats).sort((a, b) => b - a).map(height => height + 'p');
+  return { url: options.url, status: 'qualities', title: metadata.title || null, qualities };
+}
+
 /** `veo --list-formats`: print the backend's own format table and stop. */
 export async function listFormats(options, { signal, backendResolver = resolveBackend, runner = runBackend, reporter } = {}) {
   const backend = await prepareBackend(options, { signal, backendResolver, reporter });

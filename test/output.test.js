@@ -4,9 +4,32 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { statsMain } from '../src/stats.js';
-import { formatOutput, outputOptions, withOutputSettings } from '../src/output.js';
+import { formatOutput, outputOptions, withOutputSettings, outputStream } from '../src/output.js';
 import { main, parseCli } from '../src/cli.js';
 const stream = isTTY => ({ isTTY, text: '', write(value) { this.text += value; } });
+
+test('report values fit current terminal width, titles get three lines and JSON stays complete', () => {
+  const terminal = { ...stream(true), columns: 40 };
+  const output = outputStream(terminal, { enabled: false });
+  const long = 'https://example.test/' + 'x'.repeat(300);
+  output.write(`1. ${long}\n   URL: ${long}\n   Saved: C:/Videos/${long}\nOutput: ${long}\nFile: ${long}\nWould save: ${long}\n`);
+  const lines = terminal.text.trimEnd().split('\n');
+  assert.equal(lines.length, 8);
+  assert.ok(lines[2].endsWith('…'));
+  assert.ok(lines[3].startsWith('   URL: '));
+  for (const line of lines) assert.ok(line.length < 40, line);
+  terminal.columns = 500;
+  terminal.text = '';
+  output.write(`   URL: ${long}\n`);
+  assert.equal(terminal.text, `   URL: ${long}\n`);
+  const json = JSON.stringify({ url: long });
+  terminal.columns = 40;
+  terminal.text = '';
+  outputStream(terminal, { plain: true }).write(json);
+  assert.equal(terminal.text, json);
+  assert.equal(formatOutput(`URL: ${long}`, stream(false), false), `URL: ${long}`);
+  assert.equal(formatOutput(`Retry: veo --retry-failed "${long}"`, terminal, false), `Retry: veo --retry-failed "${long}"`);
+});
 
 test('profile display settings apply to reports and download options', async () => {
   const config = { profiles: { default: { color: true }, plain: { color: false } } };

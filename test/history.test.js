@@ -11,6 +11,25 @@ import { flush } from '../src/flush.js';
 const sink = () => { let text = ''; return { stdout: { write: chunk => { text += chunk; } }, read: () => text }; };
 const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+test('history bounds terminal titles and details while JSON preserves original values', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-history-width-'));
+  try {
+    const long = 'https://example.test/' + 'token'.repeat(100);
+    await createHistoryRecorder(root)({ url: long, title: long, status: 'failed', files: [], error: long });
+    const display = sink();
+    Object.assign(display.stdout, { isTTY: true, columns: 50 });
+    await historyMain(['--no-color'], { root, stdout: display.stdout });
+    const lines = display.read().trimEnd().split('\n');
+    assert.ok(lines[4].endsWith('…'));
+    for (const line of lines) assert.ok(line.length < 50, line);
+    const json = sink();
+    Object.assign(json.stdout, { isTTY: true, columns: 50 });
+    await historyMain(['--json'], { root, stdout: json.stdout });
+    assert.equal(JSON.parse(json.read()).entries[0].title, long);
+    assert.equal(JSON.parse(json.read()).entries[0].url, long);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('veo history shows only the newest five downloads, newest first', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'veo-history-'));
   try {

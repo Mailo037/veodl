@@ -34,6 +34,7 @@ export const CONFIG_KEYS = Object.freeze({
   cookiesFromBrowser: 'string',
   playlist: 'boolean',
   concurrentFragments: 'number',
+  experimentalFragments: 'boolean',
   subs: 'boolean',
   subLangs: 'string',
   embedSubs: 'boolean',

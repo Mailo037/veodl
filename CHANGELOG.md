@@ -6,14 +6,18 @@ All notable changes to veo. This project follows [Semantic Versioning](https://s
 
 ### Added
 
-- Added support for passing run IDs directly to `--retry-failed` (e.g. `veo --retry-failed <runId>`), resolving the corresponding retry job and rejecting active runs.
+- Added `veo <url> --list-qualities` (alias `--list-qualitys`) to list available video resolutions ordered highest first without downloading media. Supports `--json` and discovered `--source <n>`.
+- Expanded `--concurrent-fragments` (or `-N`) to support values from 1 to 64. Experimental values between 17 and 64 require interactive `[y/N]` confirmation in terminals, or explicit opt-in via `--experimental-fragments` (or `"experimentalFragments": true` in configuration/profiles) for scripts and automated jobs. Values above 64 are rejected.
+- Added support for passing run IDs directly to `--retry-failed` (e.g. `veo --retry-failed <runId>`), automatically locating and resolving the corresponding retry job and rejecting active runs.
 - Added clickable OSC 8 directory links for saved file destinations, config paths, and editor headers in supported terminals (Windows Terminal, iTerm2, WezTerm, Kitty, VS Code, and VTE).
+- Added inline terminal region support (`createInlineRegion`) to smoothly render live progress and status in place without flickering, entering fullscreen, or wiping terminal scrollback.
 
 ### Fixed
 
 - Handled terminal window resize events during live progress display, dynamically refitting titles and status lines.
 - Improved terminal title and line wrapping to display up to three lines for long titles before truncating.
 - Improved interactive config editor footer layout for long status messages and ensured stdin is paused cleanly upon exit.
+- Preserved complete original values in JSON and redirected output while adapting prose output to the active terminal width.
 
 ## 1.10.0
 

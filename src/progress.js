@@ -1,5 +1,7 @@
 import { cleanText } from './utils.js';
 import { createTerminalTitle } from './terminal-title.js';
+import { terminalColumns } from './terminal-size.js';
+import { createInlineRegion } from './inline-region.js';
 
 const PROCESSING_LABELS = { Merger: 'Merging audio/video', VideoRemuxer: 'Changing video container', VideoConvertor: 'Converting video', ExtractAudio: 'Converting audio', EmbedSubtitle: 'Embedding subtitles', Metadata: 'Writing metadata', EmbedThumbnail: 'Embedding thumbnail', MoveFiles: 'Preparing saved file' };
 
@@ -32,14 +34,25 @@ function fit(text, width) {
   return width > 0 ? result + '…' : '';
 }
 
+function wrap(text, width) {
+  if (!Number.isFinite(width)) return text;
+  const lines = [];
+  let line = '';
+  for (const char of text) {
+    if (line && cells(line + char) > width) { lines.push(line); line = ''; }
+    line += char;
+  }
+  return [...lines, line].join('\n');
+}
+
 export function terminalText(stream, text) {
-  return fit(cleanText(text), stream.isTTY ? Math.max(1, (stream.columns || 80) - 1) : Infinity);
+  return fit(cleanText(text), stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity);
 }
 
 export function terminalTitle(stream, text) {
   const safe = cleanText(text);
   if (!stream.isTTY) return safe;
-  const width = Math.max(1, (stream.columns || 80) - 1);
+  const width = Math.max(1, terminalColumns(stream) - 1);
   const lines = [];
   let line = '';
   for (const char of safe) {
@@ -58,32 +71,32 @@ export function formatProgress(data, { columns = Infinity, prefix = '' } = {}) {
   const total = data.total_bytes || data.total_bytes_estimate;
   const estimated = !data.total_bytes && Boolean(data.total_bytes_estimate);
   const percent = total > 0 ? Math.max(0, Math.min(estimated && data.status !== 'finished' ? 99 : 100, done / total * 100)) : null;
-  const filled = percent === null ? 0 : Math.round(percent / 5);
   const eta = Number.isFinite(data.eta) ? `${Math.floor(data.eta / 60)}:${String(Math.floor(data.eta % 60)).padStart(2, '0')}` : '?';
   const pct = `${estimated && data.status !== 'finished' ? '~' : ''}${percent === null ? '?' : percent.toFixed(0)}%`;
   const size = `${estimated ? '~' : ''}${bytes(total)}`;
-  const compact = value => bytes(value).replace(' ', '');
   const label = prefix ? cleanText(prefix) + ' ' : '';
-  const variants = data.status === 'finished'
-    ? [`${bytes(done)} received; processing…`, `${compact(done)} received`, 'Received']
-    : [
-      `[${'='.repeat(filled)}${'-'.repeat(20 - filled)}] ${pct.padStart(4)}  ${bytes(data.speed)}/s  ${bytes(done)} / ${size}  ETA ${eta}`,
-      `${pct} ${compact(data.speed)}/s ${compact(done)}/${estimated ? '~' : ''}${compact(total)} ETA ${eta}`,
-      `${pct} ${compact(data.speed)}/s ETA ${eta}`,
-      `${pct} ${compact(done)}`,
-      pct,
-    ];
-  for (const variant of variants) if (cells(label + variant) <= columns) return label + variant;
-  if (prefix) {
-    const variant = variants[Math.min(2, variants.length - 1)];
-    const available = columns - cells(variant) - 1;
-    if (available > 0) return fit(cleanText(prefix), available) + ' ' + variant;
+  if (data.status === 'finished') return wrap(`${label}${bytes(done)} received; processing…`, columns);
+  const stats = [`${bytes(data.speed)}/s`, `${bytes(done)} / ${size}`, `ETA ${eta}`];
+  const barSize = Math.max(1, Math.min(20, Number.isFinite(columns) ? columns - cells(pct) - 3 : 20));
+  const filled = percent === null ? 0 : Math.round(percent / 100 * barSize);
+  const bar = `[${'='.repeat(filled)}${'-'.repeat(barSize - filled)}] ${pct}`;
+  const full = `${label}${bar}  ${stats.join('  ')}`;
+  if (cells(full) <= columns) return full;
+  const lines = [];
+  if (label) lines.push(fit(label.trimEnd(), columns));
+  lines.push(wrap(bar, columns));
+  let statLine = '';
+  for (const stat of stats) {
+    if (statLine && cells(`${statLine}  ${stat}`) > columns) { lines.push(wrap(statLine, columns)); statLine = ''; }
+    statLine += (statLine ? '  ' : '') + stat;
   }
-  return fit(variants.at(-1), columns);
+  if (statLine) lines.push(wrap(statLine, columns));
+  return lines.join('\n');
 }
 
 export function createReporter(stream = process.stderr, { setTitle = createTerminalTitle(stream), env = process.env } = {}) {
   let color = true;
+  let region;
   const muted = text => styleText(stream, text, 'muted', color, env);
   const heading = text => styleText(stream, text, 'title', color, env);
   let active = false;
@@ -100,9 +113,43 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
   let animationFrame = 0;
   let redraw;
   let listening = false;
-  const onResize = () => { if (active) redraw?.(); };
+  let sizeTimer;
+  let lastWidth = terminalColumns(stream);
+  const append = render => {
+    if (region) region.log(render); else stream.write(render());
+  };
+  const eraseLive = () => {
+    if (!active) return;
+    stream.write('\r\x1b[2K\x1b[J');
+  };
+  const renderLive = text => {
+    eraseLive();
+    const rows = text.split('\n').length;
+    // Park the real cursor at the block's first row. The terminal relocates it
+    // during reflow; no saved cursor or guessed old line count is needed on resize.
+    stream.write(`\r\x1b[2K${text.replace(/\n/g, '\r\n')}${rows > 1 ? `\x1b[${rows - 1}A` : ''}\r`);
+    active = true;
+  };
+  const onResize = () => {
+    const width = terminalColumns(stream);
+    if (width === lastWidth) return;
+    lastWidth = width;
+    // Terminal scrollback reflows differently across hosts. Never infer cursor
+    // positions for past log/title lines; redraw only the owned live block.
+    if (active) redraw?.();
+  };
   const watchResize = render => {
+    if (region) return;
+    if (stream.isTTY && terminalColumns(stream) !== lastWidth) onResize();
     redraw = render;
+    if (!sizeTimer && stream.isTTY) {
+      lastWidth = terminalColumns(stream);
+      sizeTimer = setInterval(() => {
+        const width = terminalColumns(stream);
+        if (width !== lastWidth) onResize();
+      }, 150);
+      sizeTimer.unref?.();
+    }
     if (!listening && stream.isTTY && stream.on) {
       stream.on('resize', onResize);
       listening = true;
@@ -116,7 +163,11 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     animationLabel = label;
     animationOwner = owner;
     animationFrame = 0;
-    const tick = () => { stream.write(`\r\x1b[2K${muted(display(animationLabel + '.'.repeat(animationFrame % 3 + 1)))}`); active = true; animationFrame++; };
+    const tick = () => {
+      const render = () => muted(display(animationLabel + '.'.repeat(animationFrame % 3 + 1)));
+      if (region) region.live(render); else renderLive(render());
+      animationFrame++;
+    };
     watchResize(tick);
     tick();
     animation = setInterval(tick, 350);
@@ -126,30 +177,34 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     clear();
     const failed = status === 'failed' || status === 'error';
     const suffix = failed ? 'failed' : 'done';
-    const width = stream.isTTY ? Math.max(1, (stream.columns || 80) - 1) : Infinity;
-    const result = `${fit(label, Math.max(0, width - suffix.length - 2))}: `;
-    stream.write(muted(result) + styleText(stream, suffix, failed ? 'error' : 'success', color, env) + '\n');
+    append(() => muted(`${fit(label, Math.max(0, (stream.isTTY ? terminalColumns(stream) - 1 : Infinity) - suffix.length - 2))}: `) + styleText(stream, suffix, failed ? 'error' : 'success', color, env) + '\n');
+    watchResize(undefined);
   };
   const finishStatus = (message, owner, prefix = '', outcome) => {
     const label = prefix + cleanText(message);
     if (!animation || animationOwner !== owner || animationLabel !== label.slice(0, -1)) return;
     if (outcome) { processingResult(label.slice(0, -1), outcome); return; }
     clear();
-    stream.write(muted(display(label)) + '\n');
+    append(() => muted(display(label)) + '\n');
+    watchResize(undefined);
   };
-  const line = (data, prefix) => formatProgress(data, { prefix, columns: stream.isTTY ? Math.max(1, (stream.columns || 80) - 1) : Infinity });
+  const line = (data, prefix) => formatProgress(data, { prefix, columns: stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity });
   const draw = (data, prefix) => {
-    const render = () => { stream.write(`\r\x1b[2K${line(data, prefix)}`); active = true; };
+    if (region) { region.live(() => line(data, prefix)); return; }
+    const render = () => renderLive(line(data, prefix));
     watchResize(render);
     render();
   };
   const updateTitle = () => setTitle(`veo | ${phase}${name ? ` | ${name}` : ''}`);
   function clear() {
     stopAnimation();
+    region?.live(undefined);
+    if (sizeTimer) clearInterval(sizeTimer);
+    sizeTimer = undefined;
     if (listening) stream.removeListener?.('resize', onResize);
     listening = false;
     redraw = undefined;
-    if (active && stream.isTTY) stream.write('\r\x1b[2K');
+    if (active && stream.isTTY) { eraseLive(); stream.write('\r\x1b[2K'); }
     active = false;
     animationLabel = '';
     animationOwner = undefined;
@@ -162,7 +217,7 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
       phase = cleanText(message); name = childName;
       const line = prefix + childName + ': ' + phase;
       if (phase.endsWith('…')) animate(line.slice(0, -1), owner);
-      else { clear(); stream.write((quiet ? muted(display(line)) : display(line)) + '\n'); }
+      else { clear(); append(() => (quiet ? muted(display(line)) : display(line)) + '\n'); }
       if (started) updateTitle();
     };
     return {
@@ -190,11 +245,30 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     };
   };
   return {
+    enableInline() {
+      if (!region && stream.isTTY && env.TERM !== 'dumb') { clear(); region = createInlineRegion(stream); }
+    },
+    output(destination) {
+      if (!stream.isTTY || !destination.isTTY) return destination;
+      return {
+        isTTY: true,
+        get columns() { return terminalColumns(destination); },
+        write(chunk, ...args) {
+          clear();
+          region?.commit();
+          return destination.write(chunk, ...args);
+        },
+      };
+    },
+    dispose() { clear(); region?.close(); region = undefined; },
     configure(options) { color = options.color !== false; },
     scoped,
     item(index, total, title) {
       clear(); position = total > 1 ? `[${index}/${total}] ` : ''; hasItem = true; name = cleanText(title); streamName = ''; lastLog = 0;
-      stream.write(heading(terminalTitle(stream, `${position}${name}`)) + '\n');
+      const titleText = `${position}${name}`;
+      const render = () => heading(terminalTitle(stream, titleText)) + '\n';
+      if (region) region.source(render); else append(render);
+      watchResize(undefined);
       phase = 'Starting…'; if (started) updateTitle();
     },
     processing(data) {
@@ -208,23 +282,37 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     start(title = '') { started = true; name = cleanText(title); phase = 'Starting…'; updateTitle(); },
     name(title) {
       const next = cleanText(title);
-      if (hasItem && next !== name) { clear(); stream.write(heading(terminalTitle(stream, `${position}${next}`)) + '\n'); }
+      if (hasItem && next !== name) {
+        clear();
+        const titleText = `${position}${next}`;
+        const render = () => heading(terminalTitle(stream, titleText)) + '\n';
+        // Titles join the log stream at their chronological position, like
+        // without the inline region. Stored as a render function, they still
+        // re-render on resize (max three rows, current width).
+        if (region) region.log(render); else append(render);
+        watchResize(undefined);
+      }
       name = next; if (started) updateTitle();
     },
     status(message) {
       phase = cleanText(message);
       if (started) updateTitle();
       if (phase.endsWith('…')) animate(phase.slice(0, -1));
-      else { clear(); stream.write(muted(display(phase)) + '\n'); }
+      else {
+        clear();
+        const status = phase;
+        append(() => muted(display(status)) + '\n');
+        watchResize(undefined);
+      }
     },
     profile(value) {
       const selected = value ? cleanText(value) : 'global (no profile)';
       phase = `Profile: ${selected}`;
       if (started) updateTitle();
       clear();
-      stream.write(value && value !== 'default'
-        ? muted('Profile: ') + styleText(stream, fit(selected, stream.isTTY ? Math.max(0, (stream.columns || 80) - 10) : Infinity), 'profile', color, env) + '\n'
-        : muted(display(phase)) + '\n');
+      append(() => value && value !== 'default'
+        ? muted('Profile: ') + styleText(stream, fit(selected, stream.isTTY ? Math.max(0, terminalColumns(stream) - 10) : Infinity), 'profile', color, env) + '\n'
+        : muted(display(`Profile: ${selected}`)) + '\n');
     },
     finishStatus(message, outcome) { finishStatus(message, undefined, '', outcome); },
     failStep() { if (animation && animationOwner === undefined) processingResult(animationLabel, 'failed'); },
@@ -233,7 +321,8 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     progress(data) {
       if (data.stream && data.stream !== streamName) {
         clear(); streamName = data.stream; lastLog = 0;
-        stream.write(muted(display(`${position}${streamName} download`)) + '\n');
+        const label = `${position}${streamName} download`;
+        append(() => muted(display(label)) + '\n');
       }
       const total = data.total_bytes;
       const percent = Number.isFinite(total) && total > 0 && Number.isFinite(data.downloaded_bytes)
@@ -247,6 +336,6 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
         lastLog = Date.now();
       }
     },
-    finish: clear,
+    finish() { clear(); region?.commit(); },
   };
 }

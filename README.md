@@ -68,7 +68,8 @@ Options:
   --recode                  Explicit video conversion (requires --format)
   --playlist-concurrency <n> Parallel playlist entries, 1-4 (default: 2)
   --playlist                Download every entry of a playlist or channel URL
-  -N, --concurrent-fragments <n>   Parallel fragments, 1-16 (default: 8)
+  -N, --concurrent-fragments <n>   Parallel fragments, 1-64 (default: 8; 17-64 experimental)
+  --experimental-fragments  Explicitly accept experimental values above 16
   --subs                    Download subtitles (default languages: en)
   --sub-langs <langs>       Subtitle languages, e.g. "de,en" (implies --subs)
   --embed-subs              Embed subtitles into the video file
@@ -79,6 +80,7 @@ Options:
   --cookies <file>          Netscape cookie file, for content you may access
   --cookies-from-browser <browser[:profile]>
   --resume                  Keep partial data and continue an interrupted download
+  --list-qualities          Show available video resolutions and exit
   --list-formats            Show available formats and exit
   --dry-run                 Show what would be downloaded and exit
   --json                    One JSON object per URL instead of prose
@@ -108,7 +110,7 @@ npx veodl "https://example.com/video.mp4" --output ./downloads
 
 ### Several URLs and playlists
 
-Playlist downloads use two concurrent entries by default; use `--playlist-concurrency 1` for sequential downloads. Each entry uses up to eight concurrent DASH/HLS fragments by default (`-N 1` disables fragment parallelism). More connections help only when the source and connection have spare capacity. Video format changes preserve the encoded streams unless `--recode` is explicitly enabled; audio extraction and precise section cuts retain their existing conversion behavior.
+Playlist downloads use two concurrent entries by default; use `--playlist-concurrency 1` for sequential downloads. Each entry uses up to eight concurrent DASH/HLS fragments by default (`-N 1` disables fragment parallelism). Fragment counts between 1 and 16 need no confirmation. Values from 17 to 64 are experimental and prompt for `y/N` confirmation in terminals, or require `--experimental-fragments` (or `"experimentalFragments": true` in configuration/profiles) in non-interactive environments and JSON mode. Values above 64 are rejected. More connections help only when the source and connection have spare capacity, and excessive connections may trigger server limits. Video format changes preserve the encoded streams unless `--recode` is explicitly enabled; audio extraction and precise section cuts retain their existing conversion behavior.
 
 - Pass any number of URLs; up to two run concurrently by default. Use
   `--concurrent-downloads 1` for sequential processing. A failure is reported
@@ -206,6 +208,12 @@ example through `veo config edit`. Enable it with `veo URL --profile kompatibel`
   interactive prompts. For example, `veo stats --no-color` disables it for one command. Redirected output
   and JSON have no color escapes. `--no-color`, `"color": false`, `NO_COLOR`,
   and `TERM=dumb` disable colors.
+  Terminal reports shorten long URLs, paths and detail values to the current window
+  width. Titles can use up to three lines before an ellipsis is added. This also
+  applies with `--no-color`; JSON and redirected output retain complete values.
+  Downloads stay in the normal terminal flow. Only the current progress block is
+  updated in place; narrow windows put the statistics below the progress bar.
+  Existing logs remain in scrollback and are not replayed or rewritten on resize.
   This can be set independently per profile, for example
   `"profiles": { "default": { "color": true }, "plain": { "color": false } }`.
   Use `veo stats --profile plain` or `veo URL --profile plain`; `--color` or
@@ -336,6 +344,11 @@ download fails because a login is required, the error message points at these fl
   profile without copying browser cookies, and cannot unlock DRM content.
   Misspelled flags and commands show a nearby valid spelling, for example
   `--deepscan` suggests `--deep-scan`.
+- `veo <url> --list-qualities` lists available video resolutions, highest first,
+  without downloading media. `--list-qualitys` is an alias. Add `--json` for
+  a `qualities` array (e.g. `["1080p", "720p"]`); use `--quality 720p` to select
+  an upper bound. Unknown resolutions are reported without guessing. Audio-only,
+  storyboard and DRM formats are excluded. Supports `--source <number>` for embedded players.
 - `--list-formats` prints the backend's own format table for one URL and exits.
 - `--dry-run` prints the title, the resolved quality and the destination path that would be
   used — without creating the output directory or downloading anything.
@@ -385,7 +398,8 @@ are not allowed.
 ```
 
 Supported keys: `output`, `quality`, `format`, `rename`, `audio`, `open`, `resume`,
-`closestQuality`, `cookies`, `cookiesFromBrowser`, `playlist`, `concurrentFragments`, `playlistConcurrency`, `recode`, `compatible`, `concurrentDownloads`, `adaptiveConcurrency`,
+`closestQuality`, `cookies`, `cookiesFromBrowser`, `playlist`, `concurrentFragments`,
+`experimentalFragments`, `playlistConcurrency`, `recode`, `compatible`, `concurrentDownloads`, `adaptiveConcurrency`,
 `filenameTemplate`, `folderTemplate`, `checkSpace`, `timings`, `color`,
 `subs`, `subLangs`, `embedSubs`, `embedMetadata`, `embedThumbnail`, `sponsorblockRemove`,
 `section`, `json`. An explicit command-line flag always wins over a stored default. An

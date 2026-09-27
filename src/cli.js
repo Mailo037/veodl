@@ -1,4 +1,5 @@
 import { outputOptions, outputStream, withOutputSettings } from './output.js';
+import { validateFragments, confirmExperimentalFragments } from './experimental-fragments.js';
 import { validateTemplate } from './naming.js';
 import { parseArgs } from 'node:util';
 import path from 'node:path';
@@ -43,7 +44,9 @@ Options:
   --playlist-concurrency <n>  Simultaneous playlist downloads (1-4; default: 2)
   --playlist               Download every entry of a playlist or channel URL
   -N, --concurrent-fragments <n>
-                           Download this many fragments in parallel (1-16; default: 8)
+                           Parallel fragments (1-64; default: 8); 17-64 are experimental
+  --experimental-fragments  Explicitly accept experimental values above 16
+                           Otherwise requires terminal confirmation before download
   --subs                   Download subtitles (default languages: en)
   --sub-langs <langs>      Subtitle languages, e.g. "de,en" (implies --subs)
   --embed-subs             Embed subtitles into the video file
@@ -56,6 +59,8 @@ Options:
   --cookies-from-browser <browser[:profile]>
                            Read cookies from an installed browser
   --resume                 Keep partial data and continue an interrupted download
+  --list-qualities         Show available video resolutions and exit
+  --list-qualitys          Alias for --list-qualities
   --list-formats           Show the available formats and exit
   --list-sources           Find video sources loaded by a web page and exit
   --auto-list-sources      Search after no video is found (default: on)
@@ -134,6 +139,7 @@ const STRING_OPTIONS = {
 };
 
 const BOOLEAN_OPTIONS = {
+  'experimental-fragments': {},
   compatible: {},
   recode: {},
   'adaptive-concurrency': {},
@@ -149,6 +155,8 @@ const BOOLEAN_OPTIONS = {
   'embed-metadata': {},
   'embed-thumbnail': {},
   'closest-quality': {},
+  'list-qualities': {},
+  'list-qualitys': {},
   'list-formats': {},
   'list-sources': {},
   'auto-list-sources': {},
@@ -180,6 +188,7 @@ export function optionDefaults(config = {}) {
     cookies: config.cookies,
     'cookies-from-browser': config.cookiesFromBrowser,
     'concurrent-fragments': String(config.concurrentFragments ?? 8),
+    'experimental-fragments': config.experimentalFragments ?? false,
     'sub-langs': config.subLangs,
     'sponsorblock-remove': config.sponsorblockRemove,
     section: config.section,
@@ -293,6 +302,13 @@ export function parseCli(args, { config = {} } = {}) {
   if (values.audio && values.quality !== 'best' && typed.quality) throw new Error('--quality is for video; omit it when using --audio.');
   if (values.audio && values['closest-quality'] && typed.closest) throw new Error('--closest-quality is for video; omit it when using --audio.');
   if (values['closest-quality'] && values.quality === 'best' && typed.closest) throw new Error('--closest-quality requires a numeric --quality such as 1080p.');
+  values['list-qualities'] = Boolean(values['list-qualities'] || values['list-qualitys']);
+  delete values['list-qualitys'];
+  if (values['list-qualities']) {
+    if (positionals.length !== 1 || values['batch-file'] || values['retry-failed']) throw new Error('--list-qualities accepts exactly one URL.');
+    if (values['list-formats'] || values['list-sources']) throw new Error('--list-qualities cannot be combined with other listing actions.');
+    if (values.audio || values.playlist) throw new Error('--list-qualities requires a single video without --audio or --playlist.');
+  }
   if (values['list-formats'] && (values.audio || values.format)) throw new Error('--list-formats cannot be combined with --audio or --format.');
   if (values['list-formats'] && positionals.length > 1) throw new Error('--list-formats accepts exactly one URL.');
   if (values.source && (!/^[1-9]\d*$/.test(values.source) || !Number.isSafeInteger(Number(values.source)))) throw new Error('--source requires a positive source number.');
@@ -310,7 +326,7 @@ export function parseCli(args, { config = {} } = {}) {
   if ((values.source || values['list-sources']) && values.playlist) throw new Error('--source and --list-sources cannot be combined with --playlist.');
   if (values['concurrent-fragments'] !== undefined) {
     const fragments = Number(values['concurrent-fragments']);
-    if (!Number.isInteger(fragments) || fragments < 1 || fragments > 16) throw new Error('--concurrent-fragments must be a whole number between 1 and 16.');
+    validateFragments(fragments);
   }
   const concurrency = Number(values['playlist-concurrency']);
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('--playlist-concurrency must be a whole number between 1 and 4.');
@@ -533,15 +549,16 @@ async function runMain(args, { config }) {
       if (options.rename && options.urls.length > 1 && !options.rename.includes('*')) throw new Error('--rename only applies to a single URL unless the name contains * for the original title.');
       if (options.listFormats && options.urls.length > 1) throw new Error('--list-formats accepts exactly one URL.');
     }
+    await confirmExperimentalFragments(retryItems || [options], { signal: controller.signal });
     // The job file is created before the first download, so another terminal can
     // follow this run's per-item progress with `veo runs <id>`.
-    const jobFile = options.listFormats || options.listSources || options.dryRun ? null : jobFilePath();
+    const jobFile = options.listQualities || options.listFormats || options.listSources || options.dryRun ? null : jobFilePath();
     await run?.describe({ urls: options.urls, output: options.output ? path.resolve(options.output) : null,
       audio: options.audio, quality: options.quality, format: options.format, profile: options.profile || null,
       playlist: options.playlist, job: jobFile });
     reporter.configure?.({ color: options.color && !options.json });
     reporter.start(options.rename);
-    if (!options.dryRun && !options.listFormats && !options.listSources) reporter.profile(options.profile);
+    if (!options.dryRun && !options.listQualities && !options.listFormats && !options.listSources) reporter.profile(options.profile);
     const preparedBackends = new Map();
     const reuseBackend = request => preparedBackends.has(request.url) ? async () => preparedBackends.get(request.url) : undefined;
     const cookieWarning = cookieFileWarning(options.cookies);
@@ -579,6 +596,16 @@ async function runMain(args, { config }) {
       item.mediaUrl = discovery.mediaUrl;
     }
 
+    if (options.listQualities) {
+      const { listQualities } = await import('./downloader.js');
+      const result = await listQualities(options, { signal: controller.signal, reporter, backendResolver: reuseBackend(options) });
+      if (options.json) stdout.write(JSON.stringify(result) + '\n');
+      else {
+        stdout.write('Available qualities: ' + (result.qualities.join(', ') || 'resolution unknown') + '\n');
+        if (result.qualities.length) stdout.write('Choose with --quality ' + result.qualities[0] + '\n');
+      }
+      return 0;
+    }
     if (options.listFormats) {
       const { listFormats } = await import('./downloader.js');
       stdout.write(await listFormats(options, { signal: controller.signal, reporter, backendResolver: reuseBackend(options) }));
@@ -602,14 +629,17 @@ async function runMain(args, { config }) {
     const { download } = await import('./downloader.js');
     const { createStatsRecorder } = await import('./stats.js');
     const { createHistoryRecorder } = await import('./history.js');
+    if (!options.json && process.stdout.isTTY) reporter.enableInline();
     const result = await runJob(options, { download: (request, dependencies) => download(request, { ...dependencies, backendResolver: reuseBackend(request) }),
-      reporter, signal: controller.signal, openFile, items: retryItems, jobFile: jobFile || undefined, runId: run?.id, recordStats: createStatsRecorder(), recordHistory: createHistoryRecorder() });
+      reporter, stdout: reporter.output(stdout), stderr: reporter.output(stderr), signal: controller.signal, openFile, items: retryItems, jobFile: jobFile || undefined, runId: run?.id, recordStats: createStatsRecorder(), recordHistory: createHistoryRecorder() });
     return result;
   } catch (error) {
     reporter.fail(controller.signal.aborted);
+    reporter.dispose();
     stderr.write(`veo: ${readableError(error)}\n`);
     return controller.signal.aborted || error.name === 'AbortError' ? 130 : 1;
   } finally {
+    reporter.dispose();
     await run?.unregister();
     process.removeListener('SIGINT', cancel);
     process.removeListener('SIGTERM', cancel);

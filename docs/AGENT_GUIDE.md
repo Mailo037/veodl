@@ -31,6 +31,12 @@ not to a later download.
 
 Set `VEO_NO_UPDATE_CHECK=1` when a background update notice would distract a script. Use an explicit output directory to avoid depending on the agent's current working directory. `--dry-run` plans the download without saving media. It can still inspect the source and prepare backend tools on first use.
 
+Use `veo "<url>" --list-qualities --json` to list video resolutions without
+downloading media. The result has `status: "qualities"` and a `qualities` array
+ordered highest first, such as `["1080p", "720p"]`. `--list-qualitys` is an alias.
+An empty array means the video has no known resolution; audio-only and DRM
+formats are excluded. Use `--source <index>` for a discovered player source.
+
 ## Output and failures
 
 Download commands write **one JSON object per URL** to stdout with `--json`. Several URLs produce newline-delimited JSON, not a JSON array. Progress, summaries and errors go to stderr. A failed item can still contain saved files, especially within a playlist.
@@ -78,6 +84,9 @@ With `--check-audio`, veo decodes every audio track from start to end. `audioChe
 The run record is stored in veo's per-user cache on the device that ran the download. `inspect` works on Windows, macOS, Linux and Termux with locally available FFmpeg/FFprobe; set `VEO_FFMPEG_PATH` to their directory when they are not on the normal search path. Moving only the media to another device does not transfer the run record.
 
 ## Operational notes
+
+- Fragment concurrency defaults to 8. Values 1-16 need no confirmation; 17-64 are experimental and require terminal `y/N` confirmation before downloading. Scripts and JSON calls must explicitly accept with `--experimental-fragments` or `"experimentalFragments": true` in the config/profile. Values above 64 are always rejected. More connections may trigger server limits and do not guarantee higher speed. Dry-runs and source/format listings do not require confirmation.
+- Example profile: `"experimental": { "concurrentFragments": 32, "experimentalFragments": true }`. Run with `veo <URL> --profile experimental`; use `--no-experimental-fragments` to revoke a stored opt-in.
 
 - Run `veo doctor --offline` to check the local setup without network repair. `veo doctor fix` may install missing tools.
 - Use `--resume` for interrupted downloads and `--skip-existing` when repeated saves should be avoided.
