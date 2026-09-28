@@ -68,6 +68,8 @@ veo retry --last --json
 
 ## Inspect saved media and audio
 
+`veo subs <URL> --json` lists manual and automatic subtitle languages and formats without saving media. Select manual subtitles with `--subs --sub-langs de,en`, generated subtitles with `--auto-subs --sub-langs de,en`, and prefer a source format with `--sub-format srt/vtt/best`. `--verify` optionally probes saved media files before recording success; it is off by default and does not decode the full track.
+
 ```sh
 veo inspect "/downloads/Example.mp4" --json
 veo inspect "/downloads/Example.mp4" --check-audio --json
@@ -84,6 +86,9 @@ With `--check-audio`, veo decodes every audio track from start to end. `audioChe
 The run record is stored in veo's per-user cache on the device that ran the download. `inspect` works on Windows, macOS, Linux and Termux with locally available FFmpeg/FFprobe; set `VEO_FFMPEG_PATH` to their directory when they are not on the normal search path. Moving only the media to another device does not transfer the run record.
 
 ## Operational notes
+
+- `veo <URL> --incognito --json` saves media without a run ID, retry job, history, run archive, output duplicate record or statistics. It disables yt-dlp's filesystem cache. A config profile can set `"incognito": true`; `--no-incognito` overrides it. Incognito cannot use `--resume`, `--skip-existing`, or retry. Its temporary staging data is removed after the attempt; the output file and records outside veo (such as shell history or server logs) still exist.
+- Add `--neutral-filename` or `"neutralFilename": true` to use random media filenames instead of titles. This option is independent of `--incognito` and overrides custom file and folder naming for that request.
 
 - Fragment concurrency defaults to 8. Values 1-16 need no confirmation; 17-64 are experimental and require terminal `y/N` confirmation before downloading. Scripts and JSON calls must explicitly accept with `--experimental-fragments` or `"experimentalFragments": true` in the config/profile. Values above 64 are always rejected. More connections may trigger server limits and do not guarantee higher speed. Dry-runs and source/format listings do not require confirmation.
 - Example profile: `"experimental": { "concurrentFragments": 32, "experimentalFragments": true }`. Run with `veo <URL> --profile experimental`; use `--no-experimental-fragments` to revoke a stored opt-in.

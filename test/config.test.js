@@ -75,6 +75,28 @@ test('every documented key maps to a supported type', () => {
   assert.ok(Object.keys(CONFIG_KEYS).length >= 15);
 });
 
+test('incognito can be selected by profile and overridden for one request', () => {
+  const config = { profiles: { private: { incognito: true } }, activeProfile: 'private' };
+  const url = 'https://example.test/video';
+  assert.equal(parseCli([url], { config }).incognito, true);
+  assert.equal(parseCli([url, '--no-incognito'], { config }).incognito, false);
+  assert.equal(parseCli([url], { config: { resume: true, skipExisting: true, ...config } }).resume, false);
+  assert.equal(parseCli([url], { config: { resume: true, skipExisting: true, ...config } }).skipExisting, false);
+  assert.throws(() => parseCli([url, '--resume'], { config }), /cannot be combined with --resume/);
+  assert.throws(() => parseCli([url, '--skip-existing'], { config }), /cannot be combined with --skip-existing/);
+  assert.throws(() => parseCli(['--retry-failed', 'abc123'], { config }), /cannot retry/);
+});
+
+test('neutral filenames are optional in a private profile', () => {
+  const url = 'https://example.test/video';
+  const config = { profiles: { private: { incognito: true, neutralFilename: true } }, activeProfile: 'private' };
+  assert.equal(parseCli([url, '--no-neutral-filename'], { config }).neutralFilename, false);
+  assert.equal(parseCli([url], { config }).neutralFilename, true);
+  assert.equal(parseCli([url, '--neutral-filename']).neutralFilename, true);
+  assert.equal(parseCli([url]).neutralFilename, false);
+  assert.equal(parseCli([url, '--neutral-filename', '--rename', 'Secret', '--filename-template', '{title}']).neutralFilename, true);
+});
+
 test('source discovery config defaults are validated and explicit CLI flags override them', async () => {
   const settings = { deepScan: true, timeout: '2m', listSources: true, autoListSources: true };
   const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-source-config-'));

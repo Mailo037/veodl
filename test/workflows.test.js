@@ -19,6 +19,82 @@ const backendResolver = async () => ({ ytDlp: 'fake', ffmpegLocation: 'tools' })
 const sink = () => ({ text: '', write(value) { this.text += value; } });
 const reporter = () => createReporter(sink(), { setTitle() {} });
 
+test('incognito saves media but leaves no run, retry, history, stats or staging data', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-incognito-test-'));
+  const jobFile = path.join(root, 'retry.json');
+  const stdout = sink(), stderr = sink();
+  let staged;
+  let backendCalls = 0;
+  let recorderCalls = 0;
+  const runner = async (_, args, { onLine } = {}) => {
+    backendCalls++;
+    assert.ok(args.includes('--no-cache-dir'));
+    if (args.includes('--dump-single-json')) return JSON.stringify({ id: 'private', title: 'Private video', formats: [{ height: 720, vcodec: 'h264' }] });
+    const file = path.join(path.dirname(args[args.indexOf('-o') + 1]), 'media.mp4');
+    await writeFile(file, 'private media');
+    onLine?.(`veo-file:${JSON.stringify(file)}`);
+    return '';
+  };
+  try {
+    const options = { urls: [url], output: root, incognito: true, json: true };
+    assert.equal(await runJob(options, { reporter: reporter(), stdout, stderr, jobFile, runId: 'abc123', archiveRoot: root,
+      recordHistory: async () => { recorderCalls++; }, recordStats: async () => { recorderCalls++; },
+      download: (request, dependencies) => {
+        staged = dependencies.localRoot;
+        return actualDownload(request, { ...dependencies, backendResolver, runner });
+      } }), 0);
+    const result = JSON.parse(stdout.text.trim());
+    assert.equal(result.status, 'saved');
+    assert.equal(Object.hasOwn(result, 'runId'), false);
+    assert.equal(await readFile(result.files[0], 'utf8'), 'private media');
+    assert.deepEqual(await readdir(root), ['Private video.mp4']);
+    assert.equal(recorderCalls, 0);
+    assert.ok(backendCalls >= 2);
+    await assert.rejects(readdir(staged), { code: 'ENOENT' });
+    assert.doesNotMatch(stderr.text, /Run ID|Retry failed/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('incognito failure removes temporary data and offers no retry command', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-incognito-fail-'));
+  const stderr = sink();
+  let staged;
+  try {
+    const code = await runJob({ urls: [url], output: root, incognito: true }, {
+      reporter: reporter(), stdout: sink(), stderr, jobFile: path.join(root, 'job.json'),
+      download: async (_request, dependencies) => {
+        staged = dependencies.localRoot;
+        await writeFile(path.join(staged, 'unfinished.part'), 'partial media');
+        throw new Error('backend failed');
+      },
+    });
+    assert.equal(code, 1);
+    assert.deepEqual(await readdir(root), []);
+    await assert.rejects(readdir(staged), { code: 'ENOENT' });
+    assert.doesNotMatch(stderr.text, /Retry failed|Run ID/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('optional neutral filename hides title, custom name and template folders', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-neutral-name-'));
+  const runner = async (_, args, { onLine } = {}) => {
+    if (args.includes('--dump-single-json')) return JSON.stringify({ id: 'identifying-id', title: 'Private title', channel: 'Private channel', formats: [{ height: 720, vcodec: 'h264' }] });
+    const file = path.join(path.dirname(args[args.indexOf('-o') + 1]), 'media.mp4');
+    await writeFile(file, 'media');
+    onLine?.(`veo-file:${JSON.stringify(file)}`);
+    return '';
+  };
+  try {
+    const result = await actualDownload({ url, output: root, incognito: true, neutralFilename: true,
+      rename: 'Personal label', filenameTemplate: '{title}', folderTemplate: '{channel}/{playlist}' },
+    { localRoot: path.join(root, 'staging'), backendResolver, runner });
+    assert.match(path.basename(result.files[0]), /^video-[a-f0-9]{12}\.mp4$/);
+    assert.equal(path.dirname(result.files[0]), root);
+    assert.doesNotMatch(result.files[0], /Private|Personal|identifying/);
+    assert.deepEqual((await readdir(root)).filter(name => name !== 'staging'), [path.basename(result.files[0])]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('default profile applies automatically, explicit profiles replace it and flags win', async () => {
   const config = { open: true, profiles: { default: { quality: '720p', output: './everyday' }, music: { audio: true, format: 'mp3' } } };
   assert.equal(parseCli([url], { config }).quality, '720p');
@@ -98,6 +174,19 @@ test('interactive wizard detects collections and uses profile playlist selection
   assert.equal(parsed.audio, true);
   assert.match(prompts.find(prompt => prompt.startsWith('Download the playlist')), /\[y\]/);
   assert.match(prompts.find(prompt => prompt.startsWith('Entries')), /Enter = 2/);
+});
+
+test('interactive wizard honors an incognito profile without offering history based skip', async () => {
+  const config = { profiles: { private: { incognito: true, resume: true, skipExisting: true } }, activeProfile: 'private' };
+  const output = sink();
+  const answers = ['', url, 'video', '', '', '', 'y'];
+  const args = await interactiveArgs(config, { output, ask: async () => answers.shift(),
+    inspect: async () => ({ title: 'Private', formats: [{ height: 720, vcodec: 'h264' }] }) });
+  const parsed = parseCli(args, { config });
+  assert.equal(parsed.incognito, true);
+  assert.equal(parsed.resume, false);
+  assert.equal(parsed.skipExisting, false);
+  assert.doesNotMatch(output.text, /Skip previously downloaded/);
 });
 
 test('latest failed retry job skips newer successful and active jobs', async () => {

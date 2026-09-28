@@ -92,6 +92,17 @@ export async function inspectMedia(file, { checkAudio = false, signal, runner = 
   return result;
 }
 
+/** A fast post-download container/stream check; it does not decode the full file. */
+export async function verifySavedMedia(file, { audio = false, signal, inspect = inspectMedia } = {}) {
+  let report;
+  try { report = await inspect(file, { signal }); }
+  catch (error) { throw new Error(`Verification failed for ${file}: ${error.message}`); }
+  if (audio ? !report.hasAudioTrack : !report.hasVideoTrack) {
+    throw new Error(`Verification failed for ${file}: no ${audio ? 'audio' : 'video'} track found.`);
+  }
+  return report;
+}
+
 export async function inspectRun(id, { checkAudio = false, searchRoot, signal, root, inspect = inspectMedia } = {}) {
   if (!RUN_ARCHIVE_ID.test(id)) throw new Error('Run ids have 6 letters or digits. List active runs with veo runs --json or finished attempts with veo history --json.');
   const archive = await readRunArchive(id, root);

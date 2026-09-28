@@ -2,6 +2,18 @@
 
 All notable changes to veo. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.11.0
+
+### Added
+
+- **Incognito Downloads**: Added `--incognito` (and `"incognito": true` in configuration/profiles) to save media without creating run records, persistent retry jobs, run archives, download history, `.veo-history` records, or download statistics. Uses an isolated temporary staging directory and completely removes it upon completion, failure, or cancellation, and disables yt-dlp's filesystem cache.
+- **Neutral Filenames**: Added `--neutral-filename` (and `"neutralFilename": true`) to generate unidentifiable random filenames (e.g. `video-a1b2c3d4e5f6.mp4`), suppressing video titles, channel names, and custom folder templates in filesystem paths.
+- **Subtitle Inspection & Automatic Captions**:
+  - Added `veo subs <url>` (alias `--list-subs` / `--list-subtitles`) to inspect available manual and automatically generated subtitle tracks, languages, and source formats without downloading.
+  - Added `--auto-subs` (and `"autoSubs": true`) to download automatically generated captions/subtitles.
+  - Added `--sub-format <format>` (and `"subFormat": string`) to express a preferred subtitle source format (e.g. `srt/vtt/best`).
+- **Post-Download Media Verification**: Added `--verify` (and `"verify": true`) to probe saved media files with FFprobe before recording success, verifying container integrity and stream presence. Retains saved files for inspection if verification fails.
+
 ## 1.10.1
 
 ### Added

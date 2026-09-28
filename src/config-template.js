@@ -40,7 +40,10 @@ export const PROFILE_OPTIONS_GUIDE = String.raw`${PROFILE_OPTIONS_MARKER}
 // "folderTemplate": "{channel}/{year}",
 // "filenameTemplate": "{index} - {title}", // Without extension; do not combine with rename
 // "resume": true,
+// "incognito": false,        // Save only media; no run ID, history, stats or retry data
+// "neutralFilename": false,  // Optional random filenames; ignores rename and naming templates
 // "skipExisting": true
+// "verify": false,           // Probe saved media with FFprobe; no full decode
 // Lossless container change (the selected codecs must fit the container):
 // "format": "mkv",
 // "compatible": false,        // Opt-in H.264/AAC MP4; converts only when needed
@@ -82,7 +85,10 @@ const TEMPLATE_SOURCE = String.raw`${TEMPLATE_MARKER}
   // "section": "*10:00-12:00", // Download only a time range
   // "open": false,              // Open the completed file automatically
   // "resume": true,             // Resume interrupted downloads
+  // "incognito": true,          // Save only media; no run ID, history, stats or retry data
+  // "neutralFilename": false,  // Set true for random filenames without title or template folders
   // "skipExisting": true,       // Skip previously saved downloads
+  // "verify": false,           // Check saved media container and tracks with FFprobe
   // "concurrentFragments": 8,   // Concurrent fragments: 1 to 64; default 8
   // Values above 16 require confirmation or the explicit opt-in below.
   // "experimentalFragments": false, // true accepts experimental values 17-64
@@ -95,7 +101,9 @@ ${SOURCE_OPTIONS_GUIDE}
 
   // Subtitles and additional information:
   // "subs": true,              // Download subtitles; defaults to English
+  // "autoSubs": false,         // Include automatically generated subtitles
   // "subLangs": "de,en",        // Enable subtitles for these languages
+  // "subFormat": "srt/vtt/best", // Prefer these available subtitle formats
   // "embedSubs": true,          // Embed subtitles in the video
   // "embedMetadata": true,      // Embed the title, date and other metadata
   // "embedThumbnail": true,     // Embed the thumbnail

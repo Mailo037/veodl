@@ -104,10 +104,15 @@ export async function interactiveArgs(config, { signal, input = process.stdin, o
     if (type === 'video' && ['mp3', 'm4a', 'aac', 'opus', 'flac', 'wav'].includes(defaults.format)) args.push('--format', 'mp4');
     if (type === 'audio' && ['mp4', 'mkv', 'webm', 'mov'].includes(defaults.format)) args.push('--format', 'mp3');
     const directory = (await question(`Output directory [${defaults.output || process.cwd()}]: `)).trim() || defaults.output || process.cwd();
-    args.push('-o', directory, '--resume');
-    const skipDefault = defaults.skipExisting === false ? 'n' : 'y';
-    const skip = await choose(`Skip previously downloaded videos? (y/n) [${skipDefault}]: `, ['y', 'n'], skipDefault);
-    args.push(skip === 'y' ? '--skip-existing' : '--no-skip-existing');
+    args.push('-o', directory);
+    if (defaults.incognito) {
+      args.push('--no-resume', '--no-skip-existing');
+    } else {
+      args.push('--resume');
+      const skipDefault = defaults.skipExisting === false ? 'n' : 'y';
+      const skip = await choose(`Skip previously downloaded videos? (y/n) [${skipDefault}]: `, ['y', 'n'], skipDefault);
+      args.push(skip === 'y' ? '--skip-existing' : '--no-skip-existing');
+    }
     output.write(`Ready: ${type}, ${directory}\n`);
     if (await choose('Start download? (y/n) [y]: ', ['y', 'n'], 'y') === 'n') return null;
     return args;

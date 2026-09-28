@@ -9,6 +9,7 @@ import path from 'node:path';
 import { resolveBackend } from './backend.js';
 import { availableHeights, cappedHeight, closestHeight, saveUnique, sanitizeTitle } from './utils.js';
 import { digest, readJson, writeJson } from './state.js';
+import { isMediaFile } from './run-archive.js';
 import { cleanupDownloadCache, downloadCacheRoot, TRANSFER_RETENTION_MS } from './download-cache.js';
 import { selectedEntries, sizeEstimate, describeEstimate } from './playlist.js';
 
@@ -157,6 +158,8 @@ function downloadSettings(options) {
     embedMetadata: false, embedThumbnail: false, ...options };
   const settings = Object.fromEntries(['quality', 'audio', 'format', 'closestQuality', 'subs', 'subLangs', 'embedSubs',
     'embedMetadata', 'embedThumbnail', 'sponsorblockRemove', 'section'].map(key => [key, options[key] ?? null]));
+  if (options.autoSubs) settings.autoSubs = true;
+  if (options.subFormat) settings.subFormat = options.subFormat;
   // Existing conversion jobs retain their keys; remux requests must not reuse them.
   if (options.format && !options.audio && !options.recode) settings.videoRemux = true;
   if (options.compatible) settings.compatible = true;
@@ -229,6 +232,7 @@ function backendArgs(options, backend) {
     '--socket-timeout', '30', '--retries', '3', '--fragment-retries', '3',
     '--no-js-runtimes', '--js-runtimes', `node:${process.execPath}`,
     '--ffmpeg-location', backend.ffmpegLocation];
+  if (options.incognito) common.push('--no-cache-dir');
   if (!options.playlist) common.push('--no-playlist');
   if (options._entryIndex) common.push('--playlist-items', String(options._entryIndex));
   common.push('--concurrent-fragments', String(options.concurrentFragments ?? 8));
@@ -265,9 +269,12 @@ function mediaArgs(options, quality) {
   // WebM keep their own source selection. Resolution remains the primary choice.
   const selectedSort = options.recode || options.format === 'webm' ? quality.sort : sort;
   if (!options.audio && selectedSort) args.push('-S', selectedSort);
-  if (options.subs || options.subLangs || options.embedSubs) {
-    args.push('--write-subs', '--sub-langs', options.subLangs || 'en.*,en');
+  if (options.subs || options.autoSubs || options.subLangs || options.embedSubs) {
+    if (options.subs || (options.embedSubs && !options.autoSubs)) args.push('--write-subs');
+    if (options.autoSubs) args.push('--write-auto-subs');
+    args.push('--sub-langs', options.subLangs || 'en.*,en');
   }
+  if (options.subFormat) args.push('--sub-format', options.subFormat);
   if (options.embedSubs) args.push('--embed-subs');
   if (options.embedMetadata) args.push('--embed-metadata');
   if (options.embedThumbnail) args.push('--embed-thumbnail');
@@ -332,6 +339,19 @@ export async function listQualities(options, { signal, backendResolver = resolve
   if (!formats.length) throw new Error('No downloadable video formats found.');
   const qualities = availableHeights(formats).sort((a, b) => b - a).map(height => height + 'p');
   return { url: options.url, status: 'qualities', title: metadata.title || null, qualities };
+}
+
+/** List subtitle languages and source formats without exposing signed subtitle URLs. */
+export async function listSubtitles(options, { signal, backendResolver = resolveBackend, runner = runBackend, reporter } = {}) {
+  const backend = await prepareBackend(options, { signal, backendResolver, reporter });
+  const metadata = await fetchMetadata({ ...options, playlist: false }, { signal, backend, runner, reporter });
+  const summarize = source => Object.entries(source || {}).map(([language, tracks]) => ({
+    language,
+    name: Array.isArray(tracks) ? tracks.find(track => typeof track?.name === 'string')?.name || null : null,
+    formats: Array.isArray(tracks) ? [...new Set(tracks.map(track => track?.ext).filter(ext => typeof ext === 'string' && /^[a-z0-9]+$/i.test(ext)))].sort() : [],
+  })).sort((a, b) => a.language.localeCompare(b.language));
+  return { url: options.url, status: 'subtitles', title: metadata.title || null,
+    manual: summarize(metadata.subtitles), automatic: summarize(metadata.automatic_captions) };
 }
 
 /** `veo --list-formats`: print the backend's own format table and stop. */
@@ -405,8 +425,9 @@ async function downloadCollection(options, metadata, dependencies) {
       } catch (error) {
         if (signal?.aborted) throw error;
         failures.push({ index, error: error.message });
+        results[offset] = error.files || [];
         reporter?.status(`Entry ${index} failed: ${error.message}`);
-        outcome = { index, status: 'failed', error: error.message };
+        outcome = { index, status: 'failed', error: error.message, files: error.files || [] };
       }
       await notify(outcome);
     }
@@ -417,7 +438,9 @@ async function downloadCollection(options, metadata, dependencies) {
   if (rejected) throw rejected.reason;
   const files = results.flatMap(files => files || []);
   failures.sort((a, b) => a.index - b.index);
-  return { url: options.url, title: metadata.title || metadata.id || 'Playlist', files, saved, skipped, failures, ...(entryTimings.length ? { entryTimings: entryTimings.sort((a, b) => a.index - b.index) } : {}),
+  return { url: options.url, title: metadata.title || metadata.id || 'Playlist', files, saved, skipped, failures,
+    ...(options.verify && !failures.length && !skipped ? { verified: true } : {}),
+    ...(entryTimings.length ? { entryTimings: entryTimings.sort((a, b) => a.index - b.index) } : {}),
     status: failures.length ? 'failed' : saved ? 'saved' : 'skipped' };
 }
 
@@ -425,7 +448,7 @@ async function downloadCollection(options, metadata, dependencies) {
  * Download one URL. Returns every file that was saved, in the order the
  * backend produced them, so collections and subtitle sidecars are reported.
  */
-export async function download(options, { signal, reporter, backendResolver = resolveBackend, runner = runBackend, onEntry, localRoot = downloadCacheRoot(), skipCacheCleanup = false, adaptiveState = { divisor: 1 }, wait, diskChecker = reserveSpace, now, compatibilityRunner = runBackend } = {}) {
+export async function download(options, { signal, reporter, backendResolver = resolveBackend, runner = runBackend, onEntry, localRoot = downloadCacheRoot(), skipCacheCleanup = false, adaptiveState = { divisor: 1 }, wait, diskChecker = reserveSpace, now, compatibilityRunner = runBackend, verifier } = {}) {
   const timer = phaseTimer(now);
   const timingResult = () => {
     if (options.timings === false) return {};
@@ -438,13 +461,13 @@ export async function download(options, { signal, reporter, backendResolver = re
   const stagingPath = path.join(localRoot, `${PARTIAL_PREFIX}${requestKey}`);
   const existingStage = await lstat(stagingPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existingStage && (!existingStage.isDirectory() || existingStage.isSymbolicLink())) throw new Error(`The partial download path is not a plain directory: ${stagingPath}`);
-  const cached = await readJson(path.join(stagingPath, 'job.json'), null);
+  const cached = options.incognito ? null : await readJson(path.join(stagingPath, 'job.json'), null);
   const readyToTransfer = cached?.requestKey === requestKey && cached.ready?.length && cached.metadata
     && (cached.backendSucceeded === true || cached.compatibilityChecked === true || cached.files?.length);
   const backend = readyToTransfer ? null : await prepareBackend(options, { signal, backendResolver, reporter });
   timer.switch('metadata');
   const metadata = readyToTransfer ? cached.metadata : await adaptiveRun(() => fetchMetadata(options, { signal, backend, runner, reporter }), { enabled: options.adaptiveConcurrency !== false, state: adaptiveState, signal, reporter, wait, timer });
-  if (metadata.entries && !options._entryIndex) return downloadCollection(options, metadata, { signal, reporter, backendResolver: async () => backend, runner, onEntry, localRoot, adaptiveState, wait, diskChecker, now, compatibilityRunner });
+  if (metadata.entries && !options._entryIndex) return downloadCollection(options, metadata, { signal, reporter, backendResolver: async () => backend, runner, onEntry, localRoot, adaptiveState, wait, diskChecker, now, compatibilityRunner, verifier });
   const destination = mediaDestination(options, metadata, stagedTitle('media.mp4', metadata, options.rename));
   directory = destination.directory;
   await prepareDestination(options.output, directory);
@@ -456,10 +479,23 @@ export async function download(options, { signal, reporter, backendResolver = re
 
   const key = partialKey(metadata, options.url, options);
   const historyFile = path.join(directory, '.veo-history', `${key}.json`);
-  const history = options.skipExisting || (options.resume && options._entryIndex) ? await readJson(historyFile, null) : null;
-  if (await pruneHistoryRecord(historyFile, directory, history)) {
+  const history = !options.incognito && (options.skipExisting || (options.resume && options._entryIndex)) ? await readJson(historyFile, null) : null;
+  if (!options.incognito && await pruneHistoryRecord(historyFile, directory, history)) {
+    if (options.verify) {
+      const verifyFile = verifier || (await import('./inspect-media.js')).verifySavedMedia;
+      try {
+        const media = history.files.filter(isMediaFile);
+        if (!media.length) throw new Error('Verification failed: no saved media file was found.');
+        for (const file of media) await verifyFile(file, { audio: Boolean(options.audio), signal });
+      } catch (error) {
+        error.files = history.files;
+        error.verificationFailed = true;
+        throw error;
+      }
+    }
     reporter?.status('Already downloaded; skipped.');
-    return { url: options.url, title: metadata.title, files: [], status: 'skipped', saved: 0, skipped: 1, ...timingResult() };
+    return { url: options.url, title: metadata.title, files: [], status: 'skipped', saved: 0, skipped: 1,
+      ...(options.verify ? { verified: true } : {}), ...timingResult() };
   }
   const staging = await prepareStaging(stagingPath);
   const lockPath = path.join(staging, '.lock');
@@ -562,15 +598,30 @@ export async function download(options, { signal, reporter, backendResolver = re
       files.push(saved);
       files.push(...await saveSidecars(staging, resolved, saved, { signal, manifest, manifestFile }));
     }
-    await writeJson(historyFile, { version: 1, source: sourceKey(metadata, options.url), settings: downloadSettings(options), files });
-    return { url: options.url, title: metadata.title || metadata.id || 'video', files, status: 'saved', saved: 1, skipped: 0, ...timingResult() };
+    if (options.verify) {
+      const media = files.filter(isMediaFile);
+      if (!media.length) throw new Error('Verification failed: no saved media file was found.');
+      const verifyFile = verifier || (await import('./inspect-media.js')).verifySavedMedia;
+      try {
+        reporter?.status('Verifying saved media…');
+        for (const file of media) await verifyFile(file, { audio: Boolean(options.audio), signal });
+        reporter?.status('Media verification passed.');
+      } catch (error) {
+        error.files = files;
+        error.verificationFailed = true;
+        throw error;
+      }
+    }
+    if (!options.incognito) await writeJson(historyFile, { version: 1, source: sourceKey(metadata, options.url), settings: downloadSettings(options), files });
+    return { url: options.url, title: metadata.title || metadata.id || 'video', files, status: 'saved', saved: 1, skipped: 0,
+      ...(options.verify ? { verified: true } : {}), ...timingResult() };
   } catch (error) {
     if (!signal?.aborted) reporter?.failStep?.();
     // A kept staging directory is the whole point of --resume, and cancellation
     // is the most common reason to want one.
-    keepPartial = Boolean(options.resume || manifest?.ready?.length || unconfirmedOutput);
+    keepPartial = !options.incognito && !error.verificationFailed && Boolean(options.resume || manifest?.ready?.length || unconfirmedOutput);
     if (manifest && unconfirmedOutput) manifest.unconfirmedOutput = true;
-    if (manifest?.ready?.length || (unconfirmedOutput && !options.resume)) {
+    if (keepPartial && (manifest?.ready?.length || (unconfirmedOutput && !options.resume))) {
       manifest.expiresAt = Date.now() + TRANSFER_RETENTION_MS;
       await writeJson(manifestFile, manifest);
     }

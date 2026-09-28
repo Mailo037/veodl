@@ -48,7 +48,10 @@ Options:
   --experimental-fragments  Explicitly accept experimental values above 16
                            Otherwise requires terminal confirmation before download
   --subs                   Download subtitles (default languages: en)
-  --sub-langs <langs>      Subtitle languages, e.g. "de,en" (implies --subs)
+  --auto-subs              Include automatically generated subtitles
+  --sub-langs <langs>      Subtitle languages, e.g. "de,en" (manual unless --auto-subs)
+  --sub-format <format>    Preferred subtitle format, e.g. srt/vtt/best
+  --list-subs              Show manual and automatic subtitle languages, then exit
   --embed-subs             Embed subtitles into the video file
   --embed-metadata         Embed title, date and other metadata
   --embed-thumbnail        Embed the thumbnail
@@ -59,6 +62,8 @@ Options:
   --cookies-from-browser <browser[:profile]>
                            Read cookies from an installed browser
   --resume                 Keep partial data and continue an interrupted download
+  --incognito              Save media without run IDs, history, stats or retry data
+  --neutral-filename       Use a random video name; omit title and naming templates
   --list-qualities         Show available video resolutions and exit
   --list-qualitys          Alias for --list-qualities
   --list-formats           Show the available formats and exit
@@ -68,6 +73,7 @@ Options:
   --deep-scan              Check every media candidate found during source search
   --timeout <duration>     Source search deadline, e.g. 30, 30s or 2m (5s-10m)
   --dry-run                Show what would be downloaded and exit
+  --verify                 Probe saved media files with FFprobe (default: off)
   --json                   Print one JSON object per URL instead of prose
   --profile <name>         Apply a named config profile
   --batch-file <file>      Read URLs from a file (one per line; # comments)
@@ -89,6 +95,7 @@ Commands:
   veo history --failed --limit 20  Filter and extend download history
   veo runs [id]            List active runs; add --json for metadata and progress
   veo inspect <file>        Read media metadata; --check-audio measures audio signal
+  veo subs <url>            List available manual and automatic subtitles
   veo inspect run <id>     Inspect saved files from a finished run by its id
   veo stop [id]            Stop one run, or every active run
   veo alias list|add|remove  Manage extra command names (wrappers calling veo)
@@ -128,6 +135,7 @@ const STRING_OPTIONS = {
   'cookies-from-browser': {},
   'concurrent-fragments': { short: 'N' },
   'sub-langs': {},
+  'sub-format': {},
   'sponsorblock-remove': {},
   section: {},
   profile: {},
@@ -149,8 +157,13 @@ const BOOLEAN_OPTIONS = {
   open: {},
   audio: {},
   resume: {},
+  incognito: {},
+  'neutral-filename': {},
   playlist: {},
   subs: {},
+  'auto-subs': {},
+  'list-subs': {},
+  verify: {},
   'embed-subs': {},
   'embed-metadata': {},
   'embed-thumbnail': {},
@@ -195,8 +208,13 @@ export function optionDefaults(config = {}) {
     open: config.open ?? false,
     audio: config.audio ?? false,
     resume: config.resume ?? false,
+    incognito: config.incognito ?? false,
+    'neutral-filename': config.neutralFilename ?? false,
     playlist: config.playlist ?? false,
     subs: config.subs ?? false,
+    'auto-subs': config.autoSubs ?? false,
+    'sub-format': config.subFormat,
+    verify: config.verify ?? false,
     'embed-subs': config.embedSubs ?? false,
     'embed-metadata': config.embedMetadata ?? false,
     'embed-thumbnail': config.embedThumbnail ?? false,
@@ -238,7 +256,7 @@ const COMMAND_FLAGS = {
   config: ['--profile', '--external', '--terminal'],
   profile: [],
 };
-const COMMAND_NAMES = [...Object.keys(COMMAND_FLAGS), 'retry', 'help', 'version'];
+const COMMAND_NAMES = [...Object.keys(COMMAND_FLAGS), 'retry', 'subs', 'help', 'version'];
 
 function mistypedCommandOption(args) {
   const command = args[0];
@@ -296,9 +314,18 @@ export function parseCli(args, { config = {} } = {}) {
     } else { validateItems(values['playlist-items']); values.playlist = true; }
   }
   if (values['retry-failed'] && (positionals.length || values['batch-file'])) throw new Error('--retry-failed cannot be combined with URLs or --batch-file.');
+  if (values.incognito && values['retry-failed']) throw new Error('--incognito cannot retry a saved job. Use --no-incognito for this request.');
+  if (values.incognito && values.resume) {
+    if (tokens.some(token => token.name === 'resume')) throw new Error('--incognito cannot be combined with --resume.');
+    values.resume = false;
+  }
+  if (values.incognito && values['skip-existing']) {
+    if (tokens.some(token => token.name === 'skip-existing')) throw new Error('--incognito cannot be combined with --skip-existing.');
+    values['skip-existing'] = false;
+  }
   if (!values.output.trim()) throw new Error('The output directory cannot be empty.');
   if (values.rename !== undefined && !cleanText(values.rename)) throw new Error('The custom filename cannot be empty.');
-  if (positionals.length > 1 && values.rename !== undefined && !values.rename.includes('*')) throw new Error('--rename only applies to a single URL unless the name contains * for the original title.');
+  if (!values['neutral-filename'] && positionals.length > 1 && values.rename !== undefined && !values.rename.includes('*')) throw new Error('--rename only applies to a single URL unless the name contains * for the original title.');
   if (values.audio && values.quality !== 'best' && typed.quality) throw new Error('--quality is for video; omit it when using --audio.');
   if (values.audio && values['closest-quality'] && typed.closest) throw new Error('--closest-quality is for video; omit it when using --audio.');
   if (values['closest-quality'] && values.quality === 'best' && typed.closest) throw new Error('--closest-quality requires a numeric --quality such as 1080p.');
@@ -306,11 +333,17 @@ export function parseCli(args, { config = {} } = {}) {
   delete values['list-qualitys'];
   if (values['list-qualities']) {
     if (positionals.length !== 1 || values['batch-file'] || values['retry-failed']) throw new Error('--list-qualities accepts exactly one URL.');
-    if (values['list-formats'] || values['list-sources']) throw new Error('--list-qualities cannot be combined with other listing actions.');
+    if (values['list-formats'] || values['list-sources'] || values['list-subs']) throw new Error('--list-qualities cannot be combined with other listing actions.');
     if (values.audio || values.playlist) throw new Error('--list-qualities requires a single video without --audio or --playlist.');
   }
   if (values['list-formats'] && (values.audio || values.format)) throw new Error('--list-formats cannot be combined with --audio or --format.');
   if (values['list-formats'] && positionals.length > 1) throw new Error('--list-formats accepts exactly one URL.');
+  if (values['list-subs']) {
+    if (positionals.length !== 1 || values['batch-file'] || values['retry-failed']) throw new Error('--list-subs accepts exactly one URL.');
+    if (values['list-formats'] || values['list-sources']) throw new Error('--list-subs cannot be combined with other listing actions.');
+    if (values.playlist) throw new Error('--list-subs requires a single video without --playlist.');
+  }
+  if (values['sub-format'] && (!/^[a-z0-9]+(?:\/[a-z0-9]+)*$/i.test(values['sub-format']) || values['sub-format'].length > 100)) throw new Error('--sub-format must be a format or preference list such as srt/vtt/best.');
   if (values.source && (!/^[1-9]\d*$/.test(values.source) || !Number.isSafeInteger(Number(values.source)))) throw new Error('--source requires a positive source number.');
   if (values.source && values['list-sources'] && !tokens.some(token => token.name === 'list-sources')) values['list-sources'] = false;
   if (values['list-sources'] && !tokens.some(token => token.name === 'list-sources')
@@ -356,12 +389,12 @@ export function parseCli(args, { config = {} } = {}) {
   if (!Number.isInteger(options.concurrentDownloads) || options.concurrentDownloads < 1 || options.concurrentDownloads > 4) throw new Error('--concurrent-downloads must be a whole number between 1 and 4.');
   if (options.filenameTemplate !== undefined) validateTemplate(options.filenameTemplate);
   if (options.folderTemplate !== undefined) validateTemplate(options.folderTemplate, { folders: true });
-  if (options.rename && options.filenameTemplate) throw new Error('--rename and --filename-template cannot be combined.');
+  if (options.rename && options.filenameTemplate && !options.neutralFilename) throw new Error('--rename and --filename-template cannot be combined.');
   const disableSubs = values.subs === false && tokens.some(token => token.name === 'subs');
-  if (options.subLangs && !disableSubs) options.subs = true;
+  if (options.subLangs && !disableSubs && !options.autoSubs) options.subs = true;
   if (disableSubs) {
-    options.subLangs = undefined;
     options.embedSubs = false;
+    if (!options.autoSubs) options.subLangs = undefined;
   }
   options.profile = profileName;
   return options;
@@ -373,9 +406,11 @@ export async function main(args = process.argv.slice(2), { config } = {}) {
   if (mistyped) { process.stderr.write(`veo: ${mistyped}\n`); return 1; }
   let color = !args.includes('--no-color') && !args.includes('--json');
   let display;
+  let loadedConfig;
   try {
     display = outputOptions(args);
     const loaded = config ?? await loadConfig();
+    loadedConfig = loaded.config || {};
     color = !args.includes('--json') && (display.color ?? applyProfile(loaded.config || {}, display.profile).color ?? true);
     // Validate explicit profiles even when a color flag overrides their setting.
     if (display.profile) applyProfile(loaded.config || {}, display.profile);
@@ -391,7 +426,12 @@ export async function main(args = process.argv.slice(2), { config } = {}) {
   // One throttled (once per day) update hint after every successful command.
   // Failures, cancellations, help/version output and the update commands
   // themselves never trigger it; VEO_NO_UPDATE_CHECK=1 disables it for scripts.
-  if (code === 0 && shouldUpdateNotice(args)) {
+  let incognitoRequest = !args.length;
+  if (!incognitoRequest && code === 0 && shouldUpdateNotice(args)) {
+    try { incognitoRequest = Boolean(parseCli(args, { config: loadedConfig }).incognito); }
+    catch { /* Non-download commands have their own argument parser. */ }
+  }
+  if (code === 0 && shouldUpdateNotice(args) && !incognitoRequest) {
     try {
       const notice = await maybeUpdateNotice({ currentVersion: await packageVersion() });
       if (notice) process.stderr.write(`${notice}\n`);
@@ -446,6 +486,17 @@ async function runMain(args, { config }) {
       const { latestFailedJob } = await import('./jobs.js');
       args = ['--retry-failed', await latestFailedJob(), ...args.slice(2)];
     } catch (error) { stderr.write(`veo: ${readableError(error)}\n`); return 1; }
+  }
+  if (args[0] === 'subs') {
+    if (args[1] === '--help' || args[1] === '-h') {
+      stdout.write('veo subs <url> [--json] [--source <n>] [--profile <name>]\n\nList manual and automatically generated subtitle languages and source formats without downloading media.\n');
+      return 0;
+    }
+    if (!args[1] || args[1].startsWith('-')) {
+      stderr.write('veo: Usage: veo subs <url> [--json] [--source <n>]\n');
+      return 1;
+    }
+    args = [args[1], '--list-subs', ...args.slice(2)];
   }
   if (args[0] === 'profile') {
     try { return await profileMain(args.slice(1)); }
@@ -509,9 +560,6 @@ async function runMain(args, { config }) {
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
   try {
-    if (!args.includes('--help') && !args.includes('-h') && !args.includes('--version')) {
-      run = await (await import('./runs.js')).registerRun(cancel);
-    }
     const loaded = config ?? await loadConfig();
     for (const warning of loaded.warnings || []) stderr.write(`veo: ${warning}\n`);
     if (!args.length && process.stdin.isTTY && process.stderr.isTTY) {
@@ -526,6 +574,7 @@ async function runMain(args, { config }) {
       stdout.write(`${pkg.version}\n`);
       return 0;
     }
+    if (!options.incognito) run = await (await import('./runs.js')).registerRun(cancel);
     let retryItems;
     if (options.retryFailed) {
       retryItems = await retryOptions(options.retryFailed);
@@ -546,19 +595,19 @@ async function runMain(args, { config }) {
       options.urls.push(...lines.map(validateUrl));
       options.url = options.urls[0];
       if (!options.urls.length) throw new Error('The URL list is empty.');
-      if (options.rename && options.urls.length > 1 && !options.rename.includes('*')) throw new Error('--rename only applies to a single URL unless the name contains * for the original title.');
+      if (!options.neutralFilename && options.rename && options.urls.length > 1 && !options.rename.includes('*')) throw new Error('--rename only applies to a single URL unless the name contains * for the original title.');
       if (options.listFormats && options.urls.length > 1) throw new Error('--list-formats accepts exactly one URL.');
     }
     await confirmExperimentalFragments(retryItems || [options], { signal: controller.signal });
     // The job file is created before the first download, so another terminal can
     // follow this run's per-item progress with `veo runs <id>`.
-    const jobFile = options.listQualities || options.listFormats || options.listSources || options.dryRun ? null : jobFilePath();
+    const jobFile = options.incognito || options.listQualities || options.listFormats || options.listSources || options.listSubs || options.dryRun ? null : jobFilePath();
     await run?.describe({ urls: options.urls, output: options.output ? path.resolve(options.output) : null,
       audio: options.audio, quality: options.quality, format: options.format, profile: options.profile || null,
       playlist: options.playlist, job: jobFile });
     reporter.configure?.({ color: options.color && !options.json });
     reporter.start(options.rename);
-    if (!options.dryRun && !options.listQualities && !options.listFormats && !options.listSources) reporter.profile(options.profile);
+    if (!options.dryRun && !options.listQualities && !options.listFormats && !options.listSources && !options.listSubs) reporter.profile(options.profile);
     const preparedBackends = new Map();
     const reuseBackend = request => preparedBackends.has(request.url) ? async () => preparedBackends.get(request.url) : undefined;
     const cookieWarning = cookieFileWarning(options.cookies);
@@ -596,6 +645,20 @@ async function runMain(args, { config }) {
       item.mediaUrl = discovery.mediaUrl;
     }
 
+    if (options.listSubs) {
+      const { listSubtitles } = await import('./downloader.js');
+      const result = await listSubtitles(options, { signal: controller.signal, reporter, backendResolver: reuseBackend(options) });
+      if (options.json) stdout.write(`${JSON.stringify(result)}\n`);
+      else {
+        stdout.write(`Subtitles: ${cleanText(result.title || options.url)}\n`);
+        for (const [label, entries] of [['Manual', result.manual], ['Automatic', result.automatic]]) {
+          stdout.write(`${label}:\n`);
+          if (!entries.length) stdout.write('  none\n');
+          for (const entry of entries) stdout.write(`  ${cleanText(entry.language)}${entry.name ? ` (${cleanText(entry.name)})` : ''}: ${entry.formats.join(', ') || 'unknown'}\n`);
+        }
+      }
+      return 0;
+    }
     if (options.listQualities) {
       const { listQualities } = await import('./downloader.js');
       const result = await listQualities(options, { signal: controller.signal, reporter, backendResolver: reuseBackend(options) });
@@ -631,7 +694,8 @@ async function runMain(args, { config }) {
     const { createHistoryRecorder } = await import('./history.js');
     if (!options.json && process.stdout.isTTY) reporter.enableInline();
     const result = await runJob(options, { download: (request, dependencies) => download(request, { ...dependencies, backendResolver: reuseBackend(request) }),
-      reporter, stdout: reporter.output(stdout), stderr: reporter.output(stderr), signal: controller.signal, openFile, items: retryItems, jobFile: jobFile || undefined, runId: run?.id, recordStats: createStatsRecorder(), recordHistory: createHistoryRecorder() });
+      reporter, stdout: reporter.output(stdout), stderr: reporter.output(stderr), signal: controller.signal, openFile, items: retryItems, jobFile: jobFile || undefined, runId: run?.id,
+      recordStats: options.incognito ? undefined : createStatsRecorder(), recordHistory: options.incognito ? undefined : createHistoryRecorder() });
     return result;
   } catch (error) {
     reporter.fail(controller.signal.aborted);

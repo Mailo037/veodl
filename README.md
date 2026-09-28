@@ -71,7 +71,10 @@ Options:
   -N, --concurrent-fragments <n>   Parallel fragments, 1-64 (default: 8; 17-64 experimental)
   --experimental-fragments  Explicitly accept experimental values above 16
   --subs                    Download subtitles (default languages: en)
-  --sub-langs <langs>       Subtitle languages, e.g. "de,en" (implies --subs)
+  --auto-subs               Include automatically generated subtitles
+  --sub-langs <langs>       Subtitle languages, e.g. "de,en" (manual unless --auto-subs)
+  --sub-format <format>     Prefer subtitle formats, e.g. srt/vtt/best
+  --list-subs               Show manual and automatic subtitle availability
   --embed-subs              Embed subtitles into the video file
   --embed-metadata          Embed title, date and other metadata
   --embed-thumbnail         Embed the thumbnail
@@ -80,9 +83,12 @@ Options:
   --cookies <file>          Netscape cookie file, for content you may access
   --cookies-from-browser <browser[:profile]>
   --resume                  Keep partial data and continue an interrupted download
+  --incognito               Save media without run ID, history, stats or retry data
+  --neutral-filename        Optional random filename instead of title and templates
   --list-qualities          Show available video resolutions and exit
   --list-formats            Show available formats and exit
   --dry-run                 Show what would be downloaded and exit
+  --verify                  Probe saved media files with FFprobe (default: off)
   --json                    One JSON object per URL instead of prose
   --profile <name>          Use a named profile from the config file
   --batch-file <file>       Read one URL per line (blank lines and # comments ignored)
@@ -292,14 +298,29 @@ video sites. All new options are also documented in `veo config guide`.
 
 ### Metadata and subtitles
 
-- `--subs` writes subtitle files, `--sub-langs de,en` selects languages, and `--embed-subs`
-  embeds them into the video container instead.
+- `veo subs <URL>` lists manual and automatically generated subtitles separately, including
+  their languages and source formats. `--json` returns one object without subtitle URLs.
+- `--subs` writes manual subtitle files. `--auto-subs` adds generated subtitles, or selects
+  only generated subtitles when used alone. `--sub-langs de,en` selects languages;
+  `--sub-format srt/vtt/best` prefers available source formats in that order. A format
+  preference does not convert subtitles. `--embed-subs` embeds selected subtitles into
+  the video container.
 - `--embed-metadata` and `--embed-thumbnail` use FFmpeg to write metadata and cover art.
 - `--sponsorblock-remove sponsor,selfpromo` cuts sponsor segments (YouTube) and requires
   FFmpeg; the cut re-encodes the affected parts.
 - `--section "*10:00-12:00"` downloads only a time range.
 - `-N 8` downloads several fragments in parallel, which is noticeably faster on HLS/DASH
   sources and heavier on the network.
+
+### Optional post-download verification
+
+Use `veo <URL> --verify` or set `"verify": true` in a config profile to check
+saved media with FFprobe before recording a successful download. It checks that
+the container can be probed and contains a video track (or an audio track for
+`--audio`). Verification is off by default; `--no-verify` overrides a profile.
+This quick check does not decode the whole file or prove that the audio is
+audible. Use `veo inspect <file> --check-audio` for a full audio signal check.
+If verification fails, veo reports failure and keeps the saved file for review.
 
 ### Access and credentials
 
@@ -397,11 +418,11 @@ are not allowed.
 }
 ```
 
-Supported keys: `output`, `quality`, `format`, `rename`, `audio`, `open`, `resume`,
+Supported keys: `output`, `quality`, `format`, `rename`, `audio`, `open`, `resume`, `incognito`, `neutralFilename`,
 `closestQuality`, `cookies`, `cookiesFromBrowser`, `playlist`, `concurrentFragments`,
 `experimentalFragments`, `playlistConcurrency`, `recode`, `compatible`, `concurrentDownloads`, `adaptiveConcurrency`,
 `filenameTemplate`, `folderTemplate`, `checkSpace`, `timings`, `color`,
-`subs`, `subLangs`, `embedSubs`, `embedMetadata`, `embedThumbnail`, `sponsorblockRemove`,
+`subs`, `autoSubs`, `subLangs`, `subFormat`, `embedSubs`, `embedMetadata`, `embedThumbnail`, `sponsorblockRemove`, `verify`,
 `section`, `json`. An explicit command-line flag always wins over a stored default. An
 unknown key produces a warning; invalid JSON or a wrong value type is an error, because
 silently ignoring a typo would be worse.
@@ -419,6 +440,27 @@ a choice. `deepScan` and
 Additional defaults are `skipExisting` and `playlistItems`. Boolean defaults can be disabled
 with `--no-open`, `--no-audio`, `--no-resume`, `--no-embed-metadata`, etc. `--no-subs` also
 disables stored subtitle languages and subtitle embedding for that invocation.
+
+### Incognito downloads
+
+Use `veo <url> --incognito` or set `"incognito": true` in a named profile. The
+downloaded media is saved normally. veo does not assign a run ID or write a
+retry job, run archive, download history, output `.veo-history` record, or
+statistics for that attempt. It uses a private temporary staging directory and
+removes it after success, failure, or cancellation. It also disables yt-dlp's
+filesystem cache. `--no-incognito` overrides
+a profile for one request. Incognito cannot be combined with `--resume`,
+`--skip-existing`, or `--retry-failed`; there is no veo retry for an incognito
+attempt. A force-killed process may leave temporary files that the OS can
+clean later. The destination file, shell history, network service, and source
+website can still reveal the download.
+
+Example profile: `"profiles": { "private": { "incognito": true } }`.
+Add `"neutralFilename": true` to that profile, or pass `--neutral-filename`,
+to save files as names such as `video-a1b2c3d4e5f6.mp4`. This is optional:
+incognito keeps the normal title by default. Neutral naming overrides `--rename`,
+`--filename-template`, and `--folder-template` for that request. The selected
+output directory, media contents, and embedded metadata are unaffected.
 
 ### Named profiles
 
@@ -548,6 +590,7 @@ veo retry --last       # retry the newest failed or unfinished job
 veo runs              # active runs with their id; veo runs <id> for details
 veo runs --json       # machine-readable active run metadata
 veo inspect FILE --check-audio --json  # track metadata and audio signal
+veo subs URL --json    # available manual and automatic subtitles
 veo inspect run ID --check-audio --json  # finished run and saved media
 veo stop [id]         # stop one run, or every active run
 veo flush             # stop runs, clear temporary downloads and retry jobs

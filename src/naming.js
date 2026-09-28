@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { lstat, mkdir } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { sanitizeTitle } from './utils.js';
 
 const FIELDS = new Set(['title', 'id', 'channel', 'year', 'playlist', 'index']);
@@ -17,6 +18,9 @@ export function validateTemplate(template, { folders = false } = {}) {
 }
 
 export function mediaDestination(options, metadata, fallbackTitle) {
+  if (options.neutralFilename) {
+    return { directory: path.resolve(options.output), title: `video-${randomBytes(6).toString('hex')}` };
+  }
   const fields = {
     title: metadata.title || metadata.id || 'video', id: metadata.id || 'unknown',
     channel: metadata.channel || metadata.uploader || 'Unknown channel',
