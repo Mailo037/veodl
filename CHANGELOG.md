@@ -2,6 +2,12 @@
 
 All notable changes to veo. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.12.0
+
+### Added
+
+- **Release Notes**: Added `veo changes [<version>]` (alias `veo changelog`) to list every released version, newest first, with the installed one marked. `veo changes <version>` (or `--version <version>`, and a partial version such as `1.10`) shows the notes of one release, `--latest` shows only the newest, and `--since <version>` with `--to <version>` or `--range <from>..<to>` shows everything between two versions. The notes are parsed from the `CHANGELOG.md` shipped with the installed version, so the command works offline, wraps long entries to the terminal width and prints no automatic update hint. `--json` returns the parsed sections, entries and nested entries unchanged for scripting.
+
 ## 1.11.0
 
 ### Added

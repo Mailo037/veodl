@@ -93,6 +93,7 @@ Commands:
   veo history              Show the last 5 downloads (--json for scripting)
   veo retry --last         Retry the newest failed or unfinished job
   veo history --failed --limit 20  Filter and extend download history
+  veo changes [<version>]   List release notes; --since <version> for newer changes
   veo runs [id]            List active runs; add --json for metadata and progress
   veo inspect <file>        Read media metadata; --check-audio measures audio signal
   veo subs <url>            List available manual and automatic subtitles
@@ -246,6 +247,7 @@ export function cliOptions(config = {}) {
 
 const COMMAND_FLAGS = {
   stats: ['--json'], history: ['--json', '--limit', '--failed'],
+  changes: ['--json', '--version', '--since', '--to', '--range', '--latest'],
   runs: ['--json'], stop: [], flush: ['--stats'],
   inspect: ['--json', '--check-audio', '--search'],
   doctor: ['--offline', '--output', '-o'],
@@ -256,7 +258,9 @@ const COMMAND_FLAGS = {
   config: ['--profile', '--external', '--terminal'],
   profile: [],
 };
-const COMMAND_NAMES = [...Object.keys(COMMAND_FLAGS), 'retry', 'subs', 'help', 'version'];
+// `changelog` is an alias, so it shares the flags of the command it stands for.
+const ALIASES = { changelog: 'changes' };
+const COMMAND_NAMES = [...Object.keys(COMMAND_FLAGS), ...Object.keys(ALIASES), 'retry', 'subs', 'help', 'version'];
 
 function mistypedCommandOption(args) {
   const command = args[0];
@@ -264,8 +268,10 @@ function mistypedCommandOption(args) {
     const suggestion = suggestOption(command, COMMAND_NAMES);
     if (suggestion) return `Unknown command "${command}". Did you mean "${suggestion}"?`;
   }
-  const options = Object.hasOwn(COMMAND_FLAGS, command)
-    ? [...COMMAND_FLAGS[command], '--help', '-h', '--no-color', '--color', '--profile']
+  const flags = Object.hasOwn(COMMAND_FLAGS, command) ? COMMAND_FLAGS[command]
+    : ALIASES[command] ? COMMAND_FLAGS[ALIASES[command]] : null;
+  const options = flags
+    ? [...flags, '--help', '-h', '--no-color', '--color', '--profile']
     : command === 'retry' ? [...optionSpellings(cliOptions()), '--last'] : null;
   if (!options) return null; // Download flags are checked by parseCli itself.
   const start = ['config', 'backend', 'alias'].includes(command) && args[1] && !args[1].startsWith('-') ? 2 : 1;
@@ -421,7 +427,7 @@ export async function main(args = process.argv.slice(2), { config } = {}) {
     }
     // The command's own validation reports configuration errors.
   }
-  if (['stats', 'history', 'flush', 'runs', 'inspect', 'stop', 'update', 'up', 'upgrade', 'check', 'doctor', 'backend', 'alias', 'uninstall'].includes(args[0])) args = display.remaining;
+  if (['stats', 'history', 'changes', 'changelog', 'flush', 'runs', 'inspect', 'stop', 'update', 'up', 'upgrade', 'check', 'doctor', 'backend', 'alias', 'uninstall'].includes(args[0])) args = display.remaining;
   const code = await withOutputSettings(color, () => runMain(args, { config }));
   // One throttled (once per day) update hint after every successful command.
   // Failures, cancellations, help/version output and the update commands
@@ -446,7 +452,7 @@ export async function main(args = process.argv.slice(2), { config } = {}) {
 // anything else earns the daily update hint on success.
 export function shouldUpdateNotice(args = []) {
   if (args.includes('-h') || args.includes('--help') || args.includes('-v') || args.includes('--version')) return false;
-  if (['update', 'up', 'upgrade', 'check', 'version', 'help'].includes(args[0])) return false;
+  if (['update', 'up', 'upgrade', 'check', 'version', 'help', 'changes', 'changelog'].includes(args[0])) return false;
   return true;
 }
 
@@ -459,6 +465,10 @@ async function runMain(args, { config }) {
   }
   if (args[0] === 'history') {
     try { return await (await import('./history.js')).historyMain(args.slice(1)); }
+    catch (error) { stderr.write(`veo: ${readableError(error)}\n`); return 1; }
+  }
+  if (args[0] === 'changes' || args[0] === 'changelog') {
+    try { return await (await import('./changes.js')).changesMain(args.slice(1), { stdout }); }
     catch (error) { stderr.write(`veo: ${readableError(error)}\n`); return 1; }
   }
   if (args[0] === 'flush') {

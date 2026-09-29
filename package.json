@@ -1,6 +1,6 @@
 {
   "name": "veodl",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "A clean, simple video downloader powered by yt-dlp.",
   "type": "module",
   "bin": {

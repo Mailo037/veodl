@@ -66,6 +66,28 @@ veo retry --last --json
 
 `runs` reports **active** runs, including their ID, state, options, job path and per-item progress. Completed runs disappear from this list. Download JSON and `history` retain the `runId`. `history` reports finished attempts with their outcome and saved file paths. Use `veo --retry-failed <runId>` to retry a failed or unfinished run; a saved `job` path is also accepted as `veo --retry-failed "<job-path>"`. The original retry job must still be present, and retrying an active run by ID is rejected. `veo retry --last` finds the newest retryable job automatically. Running jobs are excluded from `retry --last`.
 
+## Release notes
+
+```sh
+veo changes --json
+veo changes 1.10.1 --json
+veo changes --since 1.9.0 --json
+```
+
+`veo changes` (alias `veo changelog`) parses the `CHANGELOG.md` shipped inside the installed
+package, so it never touches the network and never prints an update hint. Bare, it lists every
+released version, newest first, with the installed one marked as `installed`; a version argument
+(or `--version`, also a partial version such as `1.10`) selects one release, `--latest` the newest,
+and `--since <version>` with `--to <version>` or `--range <from>..<to>` everything between two
+versions, newest first. An unknown version exits nonzero and lists the known ones.
+
+The list form returns `{"current":…,"count":N,"versions":[{"version","date","installed","counts","summary"}]}`.
+One version returns `{"current","version","date","installed","sections"}`, a range
+`{"current","from","to","count","versions":[…]}`. `sections` is
+`[{"type":"Added","items":[{"text":"…","items":[…]}]}]`; nested items are preserved and the text
+is complete, so do not re-wrap it yourself. `date` is currently `null` because the changelog
+headings carry no release date.
+
 ## Inspect saved media and audio
 
 `veo subs <URL> --json` lists manual and automatic subtitle languages and formats without saving media. Select manual subtitles with `--subs --sub-langs de,en`, generated subtitles with `--auto-subs --sub-langs de,en`, and prefer a source format with `--sub-format srt/vtt/best`. `--verify` optionally probes saved media files before recording success; it is off by default and does not decode the full track.

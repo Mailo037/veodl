@@ -34,7 +34,7 @@ function fit(text, width) {
   return width > 0 ? result + '…' : '';
 }
 
-function wrap(text, width) {
+export function wrap(text, width) {
   if (!Number.isFinite(width)) return text;
   const lines = [];
   let line = '';

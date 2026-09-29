@@ -586,6 +586,10 @@ veo doctor --offline  # skip the network checks
 veo stats             # persistent download totals; --json for scripting
 veo history           # the last 5 downloads; --json for scripting
 veo history --failed --limit 20  # recent failed/cancelled attempts
+veo changes           # released versions, newest first; the installed one is marked
+veo changes 1.10.1    # notes of one release (also: --version 1.10.1)
+veo changes --since 1.10.1  # everything newer than a version
+veo changes --latest --json  # newest release as JSON
 veo retry --last       # retry the newest failed or unfinished job
 veo runs              # active runs with their id; veo runs <id> for details
 veo runs --json       # machine-readable active run metadata
@@ -688,6 +692,33 @@ directory, so parallel runs cannot overwrite each other and each record stays sm
 directory keeps one file per attempt and contains URLs, titles and local file paths;
 delete it to remove those records. `veo flush` keeps the list (only `veo flush --stats`
 resets statistics, not history).
+
+### `veo changes`
+
+Lists every **released version**, newest first, and marks the installed one. `veo changelog`
+is an alias. The notes are parsed from the `CHANGELOG.md` that ships inside the package, so
+they always belong to the installed code and the command needs no network access.
+
+```bash
+veo changes                       # all versions with their Added/Changed/Fixed counts
+veo changes 1.10.1                # the notes of one release
+veo changes --version 1.10.1      # the same, spelled out
+veo changes 1.10                  # newest release starting with 1.10
+veo changes --latest              # only the newest release
+veo changes --since 1.10.0        # everything newer than 1.10.0, up to the newest release
+veo changes --range 1.9.0..1.11.0 # a closed range, newest first
+veo changes --json                # machine-readable
+```
+
+An unknown version fails with the known versions listed. Long entries wrap to the terminal
+width, and `--json` returns the complete text. Because the list already names the released
+versions, `veo changes` prints no automatic update hint.
+
+`veo changes --json` prints `{"current":…,"count":N,"versions":[…]}`, where each entry has
+`version`, `date` (currently `null`, since the changelog headings carry no date), `installed`,
+`counts` and `summary`. One version adds `"version"`, `"installed"` and `"sections"`; a range
+adds `"from"` and `"to"` and keeps the per-release `sections`. Sections are
+`{"type":"Added","items":[{"text":"…","items":[…]}]}`, and nested items are preserved.
 
 ### `veo runs` and `veo stop`
 
