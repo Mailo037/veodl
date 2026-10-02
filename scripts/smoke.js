@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,13 @@ let requests = 0;
 try {
   const toolCache = path.join(root, 'smoke-tools');
   await mkdir(toolCache);
-  const mediaDirectory = await resolveMediaTools({ directory: toolCache, offline: true });
+  const mediaDirectory = await resolveMediaTools({ directory: toolCache });
+  if (process.platform !== 'win32' && mediaDirectory === toolCache) {
+    // A valid managed cache with lost executable bits must be repairable offline.
+    for (const name of ['ffmpeg', 'ffprobe']) await chmod(path.join(toolCache, name), 0o600);
+    assert.equal(await resolveMediaTools({ directory: toolCache, offline: true,
+      find: async () => { throw new Error('Verified cache must not need PATH'); } }), toolCache);
+  }
   const ffmpeg = path.join(mediaDirectory, `ffmpeg${exeSuffix()}`);
   const source = path.join(root, 'fixture.mp4');
   assert.equal(await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=640x360:r=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '2', '-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', source]), 0);

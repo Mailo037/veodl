@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { INSPECT_HELP, inspectMain, inspectMedia, parsePeak, runMediaTool } from '../src/inspect-media.js';
@@ -11,9 +11,7 @@ const sink = () => { let value = ''; return { stdout: { write: chunk => { value 
 test('audio inspection distinguishes no track, digital silence and a signal', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-inspect-'));
   try {
-    const toolCache = path.join(directory, 'tools');
-    await mkdir(toolCache);
-    const mediaDirectory = await resolveMediaTools({ directory: toolCache, offline: true });
+    const mediaDirectory = await resolveMediaTools({ offline: true });
     const ffmpeg = path.join(mediaDirectory, `ffmpeg${exeSuffix()}`);
     const ffprobe = path.join(mediaDirectory, `ffprobe${exeSuffix()}`);
     const tools = async () => ({ ffmpeg, ffprobe });

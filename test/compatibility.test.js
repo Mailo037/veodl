@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { exeSuffix, resolveMediaTools } from '../src/backend.js';
@@ -19,9 +19,7 @@ test('compatibility conversion really produces H264 AAC and copies already compa
   const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-compat-'));
   const file = path.join(directory, 'media.mp4');
   try {
-    const toolCache = path.join(directory, 'tools');
-    await mkdir(toolCache);
-    const ffmpegLocation = await resolveMediaTools({ directory: toolCache, offline: true });
+    const ffmpegLocation = await resolveMediaTools({ offline: true });
     const backend = { ffmpegLocation };
     const ffmpeg = path.join(ffmpegLocation, `ffmpeg${exeSuffix()}`);
     const probe = path.join(ffmpegLocation, `ffprobe${exeSuffix()}`);

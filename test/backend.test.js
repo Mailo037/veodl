@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { selectAsset, staticToolsSupported, findOnPath, wellKnownMediaDirectories, backendCacheDirectory, exeSuffix, inspectBackend, resolveBackend, RELEASE } from '../src/backend.js';
+import { selectAsset, staticToolsSupported, findOnPath, wellKnownMediaDirectories, backendCacheDirectory, exeSuffix, inspectBackend, resolveBackend, resolveMediaTools, RELEASE } from '../src/backend.js';
 
 test('Android resolves system tools offline without acquiring desktop binaries', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'veo-android-'));
@@ -59,12 +59,10 @@ test('standalone asset selection covers every published combination', () => {
   }
 });
 
-test('static tools are only required where ffprobe-static does not abort the process', () => {
-  // ffprobe-static calls process.exit() for platforms outside its matrix.
+test('desktop media-tool platform discovery keeps its existing matrix', () => {
   for (const [platform, arch, expected] of [
     ['win32', 'x64', true],
-    // Windows on ARM has no static binaries, but requiring the package is safe,
-    // so the PATH fallback in resolveBackend can take over.
+    // Windows on ARM uses the verified x64 pair with OS emulation.
     ['win32', 'arm64', true],
     ['linux', 'arm64', true],
     ['darwin', 'arm64', true],
@@ -73,6 +71,24 @@ test('static tools are only required where ffprobe-static does not abort the pro
     ['win32', 'mips', false],
     ['freebsd', 'x64', false],
   ]) assert.equal(staticToolsSupported(platform, arch), expected, `${platform}/${arch}`);
+});
+
+test('executable legacy media caches cannot bypass verification, including offline', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-unverified-media-'));
+  try {
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      const file = path.join(directory, `${name}${exeSuffix()}`);
+      await writeFile(file, 'unverified binary');
+      await chmod(file, 0o755);
+    }
+    let installs = 0;
+    const options = { directory, find: async () => undefined,
+      install: async () => { installs++; return directory; } };
+    await assert.rejects(resolveMediaTools({ ...options, offline: true }), /SHA-256 verification/);
+    assert.equal(installs, 0);
+    assert.equal(await resolveMediaTools(options), directory);
+    assert.equal(installs, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('PATH discovery finds executables and ignores non-absolute entries', async () => {

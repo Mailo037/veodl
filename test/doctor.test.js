@@ -24,8 +24,8 @@ function healthyBackend(directory) {
     platform: 'win32/x64',
     asset: 'yt-dlp.exe',
     ytDlp: { source: 'managed', path: path.join(directory, 'yt-dlp.exe'), present: true, verified: true },
-    ffmpeg: { source: 'cache', path: path.join(directory, 'ffmpeg.exe'), present: true },
-    ffprobe: { source: 'cache', path: path.join(directory, 'ffprobe.exe'), present: true },
+    ffmpeg: { source: 'cache', path: path.join(directory, 'ffmpeg.exe'), present: true, verified: true },
+    ffprobe: { source: 'cache', path: path.join(directory, 'ffprobe.exe'), present: true, verified: true },
     errors: [],
   };
 }
@@ -57,6 +57,25 @@ test('probe versions are read from tool output', () => {
   // Nightly builds carry their build stamp; report it verbatim.
   assert.equal(findProbeVersion('2025.01.15.232704'), '2025.01.15.232704');
   assert.equal(findProbeVersion('ffmpeg version 7.0.2'), undefined);
+});
+
+test('doctor never executes media from a cache that failed integrity verification', async () => {
+  const fixture = await deps();
+  const probes = [];
+  try {
+    const report = healthyBackend(fixture.directory);
+    report.ffmpeg.verified = false;
+    report.ffprobe.present = false;
+    report.ffprobe.verified = false;
+    const checks = await collectChecks({ ...fixture.options,
+      inspect: async () => report, runProbe: async file => { probes.push(file); return '2026.08.19'; } });
+    assert.deepEqual(probes, [report.ytDlp.path]);
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      const check = checks.find(check => check.label === name);
+      assert.equal(check.level, 'fail');
+      assert.match(check.detail, /SHA-256 verification failed/);
+    }
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 
 test('summaries and exit codes follow failures, not warnings', () => {

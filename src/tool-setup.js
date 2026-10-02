@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process';
-import { access, chmod, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
+import { chmod, lstat, mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { Readable, Transform, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
+import { MEDIA_ASSETS, MEDIA_ASSET_BASE } from './media-assets.js';
 import { cleanText } from './utils.js';
 
 // Only fixed package names and arguments are passed to these installers.
@@ -87,62 +93,194 @@ export async function installTermuxTools({ find, signal, status, run = runSetup,
 export function mediaPackagePlan(platform = process.platform, arch = process.arch) {
   // Windows 11 ARM runs the upstream x64 media tools via OS emulation.
   const binaryArch = platform === 'win32' && arch === 'arm64' ? 'x64' : arch;
-  const versions = {
-    'win32-x64': '5.1.0', 'win32-ia32': '5.1.0',
-    'darwin-x64': '5.1.0', 'darwin-arm64': '5.0.1',
-    'linux-x64': '5.2.0', 'linux-ia32': '5.2.0', 'linux-arm64': '5.2.0', 'linux-arm': '5.2.0',
-  };
-  const target = `${platform}-${binaryArch}`;
-  if (!versions[target]) return undefined;
-  return { binaryArch, probePackage: `@ffprobe-installer/${target}`, probeVersion: versions[target] };
+  const assets = MEDIA_ASSETS[`${platform}-${binaryArch}`];
+  return assets ? { binaryArch, ...assets } : undefined;
 }
 
-async function npmCli(find, env) {
-  const npm = await find(['npm']);
-  const candidates = [
-    env.npm_execpath,
-    npm && await realpath(npm).catch(() => undefined),
-    npm && path.join(path.dirname(npm), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js'),
-  ];
-  for (const candidate of candidates) {
-    if (!candidate || path.basename(candidate) !== 'npm-cli.js') continue;
-    if (await stat(candidate).then(info => info.isFile(), () => false)) return candidate;
+const DOWNLOAD_TIMEOUT_MS = 600_000;
+const MEDIA_ORIGINS = new Set(['https://github.com', 'https://release-assets.githubusercontent.com']);
+
+function validateAsset(asset) {
+  if (!asset || typeof asset.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(asset.name) || asset.name.includes('..')) {
+    throw new Error('Invalid media asset name.');
   }
-  throw new Error('npm was not found. Install Node.js with npm, then run veo doctor fix.');
+  if (!Number.isSafeInteger(asset.size) || asset.size <= 0 || typeof asset.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(asset.sha256)) {
+    throw new Error(`Invalid pinned integrity metadata for ${asset.name}.`);
+  }
+}
+
+function integrityStream(asset) {
+  validateAsset(asset);
+  const hash = createHash('sha256');
+  let size = 0;
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      size += chunk.length;
+      if (size > asset.size) return callback(new Error(`Unexpected size for ${asset.name}: exceeds pinned byte count.`));
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+    flush(callback) {
+      if (size !== asset.size) return callback(new Error(`Unexpected size for ${asset.name}: does not match pinned byte count.`));
+      if (hash.digest('hex') !== asset.sha256) return callback(new Error(`Integrity verification failed for ${asset.name}: SHA-256 mismatch.`));
+      callback();
+    },
+  });
+}
+
+function downloadUrl(value) {
+  const url = new URL(value);
+  if (!MEDIA_ORIGINS.has(url.origin) || url.username || url.password) throw new Error('Media download redirect must remain on an approved HTTPS origin.');
+  return url;
+}
+
+async function mediaResponse(url, { signal, fetchImpl }) {
+  let current = downloadUrl(url);
+  for (let redirects = 0; redirects <= 5; redirects++) {
+    signal.throwIfAborted();
+    const response = await fetchImpl(current.href, {
+      signal, redirect: 'manual', headers: { 'Accept-Encoding': 'identity' },
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      await response.body?.cancel?.().catch(() => {});
+      const location = response.headers.get('location');
+      if (!location || redirects === 5) throw new Error('Media download has an invalid or excessive redirect.');
+      current = downloadUrl(new URL(location, current));
+      continue;
+    }
+    if (response.status !== 200) {
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error(`Media download failed with HTTP ${response.status}.`);
+    }
+    if (!response.body) throw new Error('Media download response has no body.');
+    return response;
+  }
+  throw new Error('Media download has an excessive redirect.');
+}
+
+// This reusable primitive receives pinned metadata from its caller. Desktop
+// setup supplies only the release manifest shipped with veo, never env values.
+export async function downloadMediaAsset({
+  asset, release, destination, signal, fetchImpl = fetch, timeoutMs = DOWNLOAD_TIMEOUT_MS,
+}) {
+  validateAsset(asset);
+  if (!/^b\d+\.\d+(?:\.\d+)?$/.test(release)) throw new Error('Invalid pinned media release.');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DOWNLOAD_TIMEOUT_MS) throw new Error('Invalid media download timeout.');
+  if (asset.gzip) validateAsset(asset.gzip);
+  signal?.throwIfAborted();
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new DOMException('Media download timed out.', 'TimeoutError')), timeoutMs);
+  const downloadSignal = AbortSignal.any([deadline.signal, ...(signal ? [signal] : [])]);
+  const transferAsset = asset.gzip || asset;
+  const compressed = asset.gzip ? `${destination}.gz` : undefined;
+  const transferDestination = compressed || destination;
+  let createdTransfer = false;
+  let createdDestination = false;
+  try {
+    const response = await mediaResponse(`${MEDIA_ASSET_BASE}/${release}/${transferAsset.name}`, { signal: downloadSignal, fetchImpl });
+    const length = response.headers.get('content-length');
+    if (length !== null && (!/^\d+$/.test(length) || Number(length) !== transferAsset.size)) {
+      await response.body.cancel?.().catch(() => {});
+      throw new Error(`Unexpected content length for ${transferAsset.name}: does not match pinned byte count.`);
+    }
+    const transfer = createWriteStream(transferDestination, { flags: 'wx', mode: 0o600 });
+    transfer.once('open', () => { createdTransfer = true; });
+    const body = typeof response.body.getReader === 'function' ? Readable.fromWeb(response.body) : Readable.from(response.body);
+    await pipeline(body, integrityStream(transferAsset), transfer, { signal: downloadSignal });
+    if (asset.gzip) {
+      const output = createWriteStream(destination, { flags: 'wx', mode: 0o600 });
+      output.once('open', () => { createdDestination = true; });
+      await pipeline(createReadStream(compressed), createGunzip(), integrityStream(asset), output, { signal: downloadSignal });
+    }
+    downloadSignal.throwIfAborted();
+    return destination;
+  } catch (error) {
+    if (createdDestination) await rm(destination, { force: true });
+    if (createdTransfer) await rm(transferDestination, { force: true });
+    downloadSignal.throwIfAborted();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (compressed && createdTransfer) await rm(compressed, { force: true });
+  }
+}
+
+async function verifyMediaFile(file, asset, signal) {
+  signal?.throwIfAborted();
+  const info = await lstat(file);
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== asset.size) return false;
+  const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size !== asset.size || opened.dev !== info.dev || opened.ino !== info.ino) return false;
+    await pipeline(handle.createReadStream({ autoClose: false }), integrityStream(asset), new Writable({ write(_chunk, _encoding, callback) { callback(); } }), { signal });
+    const after = await lstat(file);
+    return after.isFile() && !after.isSymbolicLink() && after.dev === opened.dev && after.ino === opened.ino && after.size === opened.size && after.mtimeMs === opened.mtimeMs;
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function verifiedMediaTools({ directory, platform = process.platform, arch = process.arch, signal }) {
+  const plan = mediaPackagePlan(platform, arch);
+  if (!plan) return false;
+  const suffix = platform === 'win32' ? '.exe' : '';
+  try {
+    for (const tool of ['ffmpeg', 'ffprobe']) {
+      if (!await verifyMediaFile(path.join(directory, `${tool}${suffix}`), plan[tool], signal)) return false;
+    }
+    return true;
+  } catch {
+    signal?.throwIfAborted();
+    return false;
+  }
+}
+
+export function mediaProbeEnvironment(env = process.env) {
+  // Native version probes do not need any uploader configuration or secrets.
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !/^(?:SMOLUP|SMOP|SMUP)_/i.test(name)));
 }
 
 export async function installMediaTools({
-  directory, find, stage, signal, status, platform = process.platform, arch = process.arch,
-  env = process.env, run = runSetup, locateNpm = npmCli,
+  directory, stage, signal, status = () => {}, platform = process.platform, arch = process.arch,
+  env = process.env, run = runSetup, fetchImpl = fetch,
 }) {
   const plan = mediaPackagePlan(platform, arch);
   if (!plan) throw new Error(`Automatic FFmpeg setup is unavailable for ${platform}/${arch}. Set VEO_FFMPEG_PATH to a directory containing ffmpeg and ffprobe.`);
-  const cli = await locateNpm(find, env);
+  signal?.throwIfAborted();
+  const setupSignal = AbortSignal.any([AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS), ...(signal ? [signal] : [])]);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
   const temporary = await mkdtemp(path.join(directory, '.media-setup-'));
   const suffix = platform === 'win32' ? '.exe' : '';
   try {
+    if (process.platform !== 'win32') await chmod(temporary, 0o700);
     status('Downloading FFmpeg and FFprobe into the veo cache (first use)…');
-    // This is a private throwaway project, never the global package or cwd.
-    // Ignore dependency scripts; invoke the pinned ffmpeg installer explicitly.
-    const args = [cli, 'install', '--prefix', temporary, '--no-save', '--package-lock=false', '--ignore-scripts', '--no-audit', '--no-fund', '--global=false', 'ffmpeg-static@5.3.0', `${plan.probePackage}@${plan.probeVersion}`];
-    if (platform === 'win32' && arch === 'arm64') args.push('--force');
-    await run(process.execPath, args, { signal, status, cwd: temporary, env });
-    const modules = path.join(temporary, 'node_modules');
-    await run(process.execPath, [path.join(modules, 'ffmpeg-static', 'install.js')], {
-      signal, status, cwd: temporary,
-      env: { ...env, npm_config_platform: platform, npm_config_arch: plan.binaryArch, FFMPEG_BIN: '', FFMPEG_BINARY_RELEASE: 'b6.1.1' },
-    });
-    const ffmpeg = path.join(modules, 'ffmpeg-static', `ffmpeg${suffix}`);
-    const ffprobe = path.join(modules, ...plan.probePackage.split('/'), `ffprobe${suffix}`);
-    for (const file of [ffmpeg, ffprobe]) {
-      await access(file);
-      if (process.platform !== 'win32') await chmod(file, 0o755);
-      await run(file, ['-version'], { signal, timeoutMs: 15_000 });
+    const files = {
+      license: path.join(temporary, 'FFmpeg.LICENSE'),
+      readme: path.join(temporary, 'FFmpeg.README'),
+      ffmpeg: path.join(temporary, `ffmpeg${suffix}`),
+      ffprobe: path.join(temporary, `ffprobe${suffix}`),
+    };
+    for (const name of ['license', 'readme', 'ffmpeg', 'ffprobe']) {
+      await downloadMediaAsset({ asset: plan[name], release: plan.release, destination: files[name], signal: setupSignal, fetchImpl });
     }
-    await stage(ffmpeg, path.join(directory, `ffmpeg${suffix}`), signal);
-    await stage(ffprobe, path.join(directory, `ffprobe${suffix}`), signal);
+    // Verify the whole pair before either downloaded program may execute.
+    if (!await verifiedMediaTools({ directory: temporary, platform, arch, signal: setupSignal })) throw new Error('Downloaded media tools failed pinned integrity verification.');
+    for (const name of ['license', 'readme']) {
+      if (!await verifyMediaFile(files[name], plan[name], setupSignal)) throw new Error('Downloaded media notices failed pinned integrity verification.');
+    }
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      if (process.platform !== 'win32') await chmod(files[name], 0o700);
+      await run(files[name], ['-version'], { signal: setupSignal, env: mediaProbeEnvironment(env), timeoutMs: 15_000 });
+    }
+    for (const name of ['ffmpeg', 'ffprobe', 'license', 'readme']) {
+      await stage(files[name], path.join(directory, path.basename(files[name])), setupSignal);
+    }
+    if (!await verifiedMediaTools({ directory, platform, arch, signal: setupSignal })) throw new Error('Staged media tools failed pinned integrity verification.');
+    for (const name of ['license', 'readme']) {
+      if (!await verifyMediaFile(path.join(directory, path.basename(files[name])), plan[name], setupSignal)) throw new Error('Staged media notices failed pinned integrity verification.');
+    }
+    setupSignal.throwIfAborted();
     return directory;
   } catch (cause) {
     signal?.throwIfAborted();

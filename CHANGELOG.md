@@ -2,6 +2,15 @@
 
 All notable changes to veo. This project follows [Semantic Versioning](https://semver.org/).
 
+## 1.12.1
+
+### Fixed
+
+- Remove the optional FFmpeg npm dependency tree and its installation scripts.
+- Download desktop FFmpeg and FFprobe from fixed upstream releases and verify compressed and executable SHA-256 hashes before either program runs. Preserve upstream license and build information alongside the tools.
+- Verify managed media caches on reuse and reject legacy, corrupt or symlinked binaries. Preserve trusted system tools and explicit overrides.
+- Keep Smolish cookie environment variables out of media-tool probe processes.
+
 ## 1.12.0
 
 ### Added

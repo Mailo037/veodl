@@ -38,7 +38,7 @@ let server;
 try {
   const toolCache = path.join(root, 'smoke-tools');
   await mkdir(toolCache);
-  const mediaDirectory = await resolveMediaTools({ directory: toolCache, offline: true });
+  const mediaDirectory = await resolveMediaTools({ directory: toolCache });
   const ffmpeg = path.join(mediaDirectory, `ffmpeg${exeSuffix()}`);
   const source = path.join(root, 'fixture.mp4');
   assert.equal(await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=10', '-t', '1', '-c:v', 'libx264', source]), 0);

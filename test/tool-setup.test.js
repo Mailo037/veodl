@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, chmod, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { resolveBackend, resolveMediaTools } from '../src/backend.js';
 import { createReporter } from '../src/progress.js';
-import { runSetup, installTermuxTools, installMediaTools, mediaPackagePlan } from '../src/tool-setup.js';
+import { runSetup, installTermuxTools, installMediaTools, mediaPackagePlan, mediaProbeEnvironment } from '../src/tool-setup.js';
 
 const status = () => {};
 
@@ -97,35 +97,145 @@ test('ffmpeg preparation animates and finishes with a colored result', async () 
   }
 });
 
-test('desktop installer stages only probed binaries and cleans temporary npm files', async () => {
+test('desktop installer rejects an invalid asset before probing or staging and ignores mirror overrides', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-media-install-'));
   const calls = [];
   const staged = [];
+  const urls = [];
   const options = { directory, platform: 'linux', arch: 'arm64', status, env: {},
-    locateNpm: async () => '/node/npm-cli.js', stage: async (source, destination) => staged.push([source, destination]),
-    run: async (command, args) => {
-      calls.push([command, args]);
-      if (args[1] !== 'install') return;
-      const root = args[args.indexOf('--prefix') + 1];
-      for (const file of ['ffmpeg-static/ffmpeg', '@ffprobe-installer/linux-arm64/ffprobe']) {
-        const target = path.join(root, 'node_modules', file);
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, 'fixture');
-      }
+    stage: async (...args) => staged.push(args), run: async (...args) => calls.push(args),
+    fetchImpl: async (url, request) => {
+      urls.push(url);
+      assert.equal(request.headers?.Cookie, undefined);
+      assert.equal(request.headers?.Authorization, undefined);
+      return new Response('tampered download');
     },
   };
+  const hostile = {
+    FFMPEG_BIN: '/untrusted/ffmpeg', FFMPEG_BINARY_RELEASE: 'latest',
+    FFMPEG_BINARIES_URL: 'https://attacker.invalid/media',
+    npm_config_platform: 'darwin', npm_config_arch: 'x64',
+  };
+  const previous = Object.fromEntries(Object.keys(hostile).map(key => [key, process.env[key]]));
   try {
-    await installMediaTools(options);
-    assert.ok(calls[0][1].includes('--ignore-scripts'));
-    assert.ok(calls[0][1].includes('@ffprobe-installer/linux-arm64@5.2.0'));
-    assert.equal(calls.length, 4); // npm, pinned installer, two binary probes
-    assert.equal(staged.length, 2);
+    Object.assign(process.env, hostile);
+    await assert.rejects(installMediaTools({ ...options, env: hostile }), /size|SHA-256|checksum|length/i);
+    assert.deepEqual(urls, ['https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/linux-arm64.LICENSE']);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(staged, []);
     assert.deepEqual(await readdir(directory), []);
-    await assert.rejects(installMediaTools({ ...options, run: async () => { throw new Error('network down'); } }), /network down/);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed second media asset discards the verified first asset without executing anything', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-media-second-'));
+  const license = await readFile(new URL('./fixtures/media.LICENSE', import.meta.url));
+  const fetched = [];
+  const calls = [];
+  try {
+    await assert.rejects(installMediaTools({ directory, platform: 'win32', arch: 'arm64', status,
+      fetchImpl: async url => {
+        fetched.push(url);
+        return fetched.length === 1 ? new Response(license) : new Response('unavailable', { status: 503 });
+      },
+      run: async (...args) => calls.push(['probe', ...args]),
+      stage: async (...args) => calls.push(['stage', ...args]),
+    }), /503/);
+    assert.deepEqual(fetched, [
+      'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.LICENSE',
+      'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/win32-x64.README',
+    ]);
+    assert.deepEqual(calls, []);
     assert.deepEqual(await readdir(directory), []);
-    assert.equal(mediaPackagePlan('win32', 'arm64').binaryArch, 'x64');
-    assert.equal(mediaPackagePlan('android', 'arm64'), undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a fresh nested media cache reaches acquisition and cleans a failed setup', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-media-fresh-'));
+  const directory = path.join(root, 'missing', 'nested', 'media');
+  const failure = new Error('fixture media network unavailable');
+  const fetched = [];
+  const calls = [];
+  try {
+    await assert.rejects(installMediaTools({ directory, platform: 'linux', arch: 'x64', status,
+      fetchImpl: async url => { fetched.push(url); throw failure; },
+      run: async (...args) => calls.push(['probe', ...args]),
+      stage: async (...args) => calls.push(['stage', ...args]),
+    }), error => {
+      assert.match(error.message, /fixture media network unavailable/);
+      assert.equal(error.cause, failure);
+      return true;
+    });
+    assert.deepEqual(fetched, ['https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/linux-x64.LICENSE']);
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await readdir(directory), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('unsupported or pre-aborted media setup leaves a fresh cache uncreated', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-media-no-write-'));
+  const controller = new AbortController();
+  controller.abort(new Error('fixture media setup cancelled'));
+  const calls = [];
+  try {
+    for (const [name, options, expected] of [
+      ['unsupported', { platform: 'android', arch: 'arm64' }, /unavailable/],
+      ['cancelled', { platform: 'linux', arch: 'x64', signal: controller.signal }, /fixture media setup cancelled/],
+    ]) {
+      const directory = path.join(root, name, 'media');
+      await assert.rejects(installMediaTools({ directory, status, ...options,
+        fetchImpl: async (...args) => calls.push(['fetch', ...args]),
+        run: async (...args) => calls.push(['probe', ...args]),
+        stage: async (...args) => calls.push(['stage', ...args]),
+      }), expected);
+      await assert.rejects(readdir(directory), { code: 'ENOENT' });
+    }
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('desktop media plans select fixed upstream targets, including Windows ARM64 emulation', () => {
+  const targets = ['win32-x64', 'win32-ia32', 'darwin-x64', 'darwin-arm64', 'linux-x64', 'linux-ia32', 'linux-arm64', 'linux-arm'];
+  for (const target of targets) {
+    const [platform, arch] = target.split('-');
+    const plan = mediaPackagePlan(platform, arch);
+    assert.equal(plan.binaryArch, arch);
+    assert.equal(plan.release, target === 'win32-ia32' ? 'b6.0' : 'b6.1.1');
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      assert.equal(plan[name].name, `${name}-${target}`);
+      assert.match(plan[name].sha256, /^[a-f0-9]{64}$/);
+      assert.ok(Number.isSafeInteger(plan[name].size) && plan[name].size > 0);
+      assert.equal(plan[name].gzip.name, `${name}-${target}.gz`);
+      assert.match(plan[name].gzip.sha256, /^[a-f0-9]{64}$/);
+      assert.ok(Number.isSafeInteger(plan[name].gzip.size) && plan[name].gzip.size > 0);
+    }
+    for (const name of ['license', 'readme']) {
+      assert.match(plan[name].sha256, /^[a-f0-9]{64}$/);
+      assert.ok(Number.isSafeInteger(plan[name].size) && plan[name].size > 0);
+    }
+  }
+  assert.deepEqual(mediaPackagePlan('win32', 'arm64'), mediaPackagePlan('win32', 'x64'));
+  assert.equal(mediaPackagePlan('android', 'arm64'), undefined);
+  assert.equal(mediaPackagePlan('darwin', 'ia32'), undefined);
+  assert.equal(mediaPackagePlan('linux', 'riscv64'), undefined);
+});
+
+test('media binary probe environment excludes uploader cookies and tokens', () => {
+  const environment = { PATH: '/fixture/bin', HOME: '/fixture/home',
+    SMOLUP_COOKIE: 'secret-a', SMOP_COOKIE: 'secret-b', SMUP_COOKIE: 'secret-c',
+    SMOLUP_COOKIE_FILE: '/private/cookie', SMOP_TOKEN: 'secret-token', smup_cookie: 'secret-lowercase',
+  };
+  const cleaned = mediaProbeEnvironment(environment);
+  assert.equal(cleaned.PATH, environment.PATH);
+  assert.equal(cleaned.HOME, environment.HOME);
+  for (const key of Object.keys(environment).filter(key => /^(?:SMOLUP|SMOP|SMUP)_/i.test(key))) assert.equal(cleaned[key], undefined);
+  assert.equal(environment.SMOLUP_COOKIE, 'secret-a');
 });
 
 test('installer runner handles success, failure, timeout and cancellation', async () => {
