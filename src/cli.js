@@ -624,7 +624,7 @@ async function runMain(args, { config }) {
     if (cookieWarning) stderr.write(`veo: ${cookieWarning}\n`);
 
     // For a single page, fall back to media requests observed while its player loads.
-    // Explicit --source always rediscovers: signed media URLs can expire between runs.
+    // Explicit --source rediscovers unless a completed local transfer is usable.
     if (!retryItems && options.urls.length === 1 && (!options.playlist || options.listSources)) {
       const discovery = await resolvePageSource(options, { signal: controller.signal, stderr, reporter,
         onBackend: backend => preparedBackends.set(options.url, backend) });
@@ -727,8 +727,12 @@ async function askSourceQuestion(prompt, signal) {
 }
 
 export async function resolvePageSource(options, { signal, stderr, reporter, onBackend, inspect, discover, ask = askSourceQuestion,
-  backendResolver, interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY && !options.json) }) {
-  const { fetchMetadata, prepareBackend, runBackend } = await import('./downloader.js');
+  backendResolver, localRoot, interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY && !options.json) }) {
+  const { fetchMetadata, prepareBackend, readReadyTransfer, runBackend } = await import('./downloader.js');
+  // Source validation remains necessary for new downloads and metadata actions;
+  // a completed local transfer can finish while its original source is offline.
+  if (!options.incognito && !options.dryRun && !options.listSources && !options.listFormats
+    && !options.listQualities && !options.listSubs && await readReadyTransfer(options, { localRoot, signal })) return {};
   const { discoverSources, formatSource, shouldOfferSourceDiscovery } = await import('./source-discovery.js');
   const backend = inspect ? null : await (backendResolver || prepareBackend)(options, { signal, reporter });
   if (backend) onBackend?.(backend);

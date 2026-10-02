@@ -10,6 +10,7 @@ All notable changes to veo. This project follows [Semantic Versioning](https://s
 - Download desktop FFmpeg and FFprobe from fixed upstream releases and verify compressed and executable SHA-256 hashes before either program runs. Preserve upstream license and build information alongside the tools.
 - Verify managed media caches on reuse and reject legacy, corrupt or symlinked binaries. Preserve trusted system tools and explicit overrides.
 - Keep Smolish cookie environment variables out of media-tool probe processes.
+- Retry completed local transfers without contacting the original source, including selected-source retries, while retaining cache expiry and path validation.
 
 ## 1.12.0
 

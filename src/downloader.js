@@ -173,6 +173,42 @@ export function localRequestKey(options) {
   return digest({ url: options.url, entry: options._entryIndex || null, settings: downloadSettings(options), output: path.resolve(options.output) });
 }
 
+/** Read a completed, still usable local transfer without contacting its source. */
+export async function readReadyTransfer(options, { localRoot = downloadCacheRoot(), signal, cached, now = Date.now() } = {}) {
+  signal?.throwIfAborted();
+  if (options.incognito || typeof options.output !== 'string') return null;
+  const requestKey = localRequestKey(options);
+  const staging = path.join(path.resolve(localRoot), `${PARTIAL_PREFIX}${requestKey}`);
+  try {
+    const info = await lstat(staging);
+    if (!info.isDirectory() || info.isSymbolicLink()) return null;
+    const manifestFile = path.join(staging, 'job.json');
+    const manifestInfo = await lstat(manifestFile);
+    if (!manifestInfo.isFile() || manifestInfo.isSymbolicLink()) return null;
+    const manifest = cached === undefined ? await readJson(manifestFile, null) : cached;
+    if (manifest?.version !== 1 || manifest.requestKey !== requestKey
+      || !manifest.metadata || typeof manifest.metadata !== 'object' || Array.isArray(manifest.metadata)
+      || !Array.isArray(manifest.ready) || !manifest.ready.length || !Array.isArray(manifest.files)
+      || !(manifest.backendSucceeded === true || manifest.compatibilityChecked === true || manifest.files.length)
+      || manifest.expiresAt !== undefined && (!Number.isFinite(manifest.expiresAt) || manifest.expiresAt <= now)
+      || manifest.key !== partialKey(manifest.metadata, options.url, options)) return null;
+    const directory = mediaDestination(options, manifest.metadata, stagedTitle('media.mp4', manifest.metadata, options.rename)).directory;
+    if (manifest.files.some(item => typeof item?.source !== 'string' || path.dirname(item.source) !== staging
+      || typeof item.destination !== 'string' || path.dirname(item.destination) !== directory)) return null;
+    for (const file of manifest.ready) {
+      if (typeof file !== 'string' || path.dirname(file) !== staging || !isStagedMedia(path.basename(file))) return null;
+      const media = await lstat(file);
+      if (!media.isFile() || media.isSymbolicLink()) return null;
+    }
+    signal?.throwIfAborted();
+    return manifest;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
 /**
  * Resuming reuses a predictable directory name, so it must not follow a
  * symlink or a file that another process placed there.
@@ -462,8 +498,7 @@ export async function download(options, { signal, reporter, backendResolver = re
   const existingStage = await lstat(stagingPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existingStage && (!existingStage.isDirectory() || existingStage.isSymbolicLink())) throw new Error(`The partial download path is not a plain directory: ${stagingPath}`);
   const cached = options.incognito ? null : await readJson(path.join(stagingPath, 'job.json'), null);
-  const readyToTransfer = cached?.requestKey === requestKey && cached.ready?.length && cached.metadata
-    && (cached.backendSucceeded === true || cached.compatibilityChecked === true || cached.files?.length);
+  const readyToTransfer = await readReadyTransfer(options, { localRoot, signal, cached });
   const backend = readyToTransfer ? null : await prepareBackend(options, { signal, backendResolver, reporter });
   timer.switch('metadata');
   const metadata = readyToTransfer ? cached.metadata : await adaptiveRun(() => fetchMetadata(options, { signal, backend, runner, reporter }), { enabled: options.adaptiveConcurrency !== false, state: adaptiveState, signal, reporter, wait, timer });
