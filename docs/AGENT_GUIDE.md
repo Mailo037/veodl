@@ -116,6 +116,7 @@ The run record is stored in veo's per-user cache on the device that ran the down
 - Example profile: `"experimental": { "concurrentFragments": 32, "experimentalFragments": true }`. Run with `veo <URL> --profile experimental`; use `--no-experimental-fragments` to revoke a stored opt-in.
 
 - Run `veo doctor --offline` to check the local setup without network repair. `veo doctor fix` may install missing tools.
+- Desktop media downloads use fixed release URLs and shipped SHA-256 hashes; both FFmpeg and FFprobe are verified before execution and on cache reuse. A rejected legacy cache requires `veo doctor fix`. Trusted PATH tools and `VEO_FFMPEG_PATH` remain explicit alternatives. The npm package has no runtime dependencies or install scripts.
 - Use `--resume` for interrupted downloads and `--skip-existing` when repeated saves should be avoided.
 - `veo flush` removes temporary downloads and retry jobs; do not run it as routine maintenance in an agent workflow.
 - Do not call bare `veo` in an interactive terminal from automation: it opens a wizard. Use explicit URLs and flags.

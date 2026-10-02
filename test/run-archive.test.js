@@ -121,9 +121,8 @@ test('real CLI inspects a finished run after the media file was renamed', async 
   try {
     const { mkdir } = await import('node:fs/promises');
     await mkdir(output);
-    const toolCache = path.join(home, 'tools');
-    await mkdir(toolCache);
-    const mediaDirectory = await resolveMediaTools({ directory: toolCache, offline: true });
+    const mediaDirectory = await resolveMediaTools({ offline: true });
+    env.VEO_FFMPEG_PATH = mediaDirectory;
     await runMediaTool(path.join(mediaDirectory, `ffmpeg${exeSuffix()}`), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi',
       '-i', 'sine=frequency=440:duration=0.2', '-c:a', 'pcm_s16le', original]);
     await archiveRun({ runId: 'ghi789', options: { output }, items: [{ url: 'https://example.test/audio', status: 'saved', files: [original] }] }, { root });

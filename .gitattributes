@@ -1,0 +1,2 @@
+bin/*.js text eol=lf
+test/fixtures/media.LICENSE -text

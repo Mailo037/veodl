@@ -172,6 +172,10 @@ export async function collectChecks({
 
   for (const name of ['ffmpeg', 'ffprobe']) {
     const tool = report[name] || {};
+    if (tool.source === 'cache' && tool.verified === false) {
+      push('fail', name, `${tool.path} — SHA-256 verification failed; run veo doctor fix`);
+      continue;
+    }
     if (!tool.present) {
       push('fail', name, 'not found — run veo doctor fix to install automatically, or set VEO_FFMPEG_PATH to a directory containing ffmpeg and ffprobe');
       continue;
@@ -179,7 +183,7 @@ export async function collectChecks({
     const source = tool.source === 'override' ? 'VEO_FFMPEG_PATH' : tool.source === 'cache' ? 'managed cache' : 'system installation';
     try {
       await runProbe(tool.path, ['-version']);
-      push('ok', name, `${tool.path} (${source})`);
+      push('ok', name, `${tool.path} (${source}${tool.verified ? ', SHA-256 verified' : ''})`);
     } catch (error) {
       push('fail', name, `${tool.path} (${source}) — could not run it: ${readableError(error)}`);
     }

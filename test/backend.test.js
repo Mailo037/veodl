@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, chmod, symlink, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { selectAsset, staticToolsSupported, findOnPath, wellKnownMediaDirectories, backendCacheDirectory, exeSuffix, inspectBackend, resolveBackend, RELEASE } from '../src/backend.js';
+import { selectAsset, staticToolsSupported, findOnPath, wellKnownMediaDirectories, backendCacheDirectory, exeSuffix, inspectBackend, resolveBackend, resolveMediaTools, RELEASE } from '../src/backend.js';
 
 test('Android resolves system tools offline without acquiring desktop binaries', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'veo-android-'));
@@ -59,12 +59,10 @@ test('standalone asset selection covers every published combination', () => {
   }
 });
 
-test('static tools are only required where ffprobe-static does not abort the process', () => {
-  // ffprobe-static calls process.exit() for platforms outside its matrix.
+test('desktop media-tool platform discovery keeps its existing matrix', () => {
   for (const [platform, arch, expected] of [
     ['win32', 'x64', true],
-    // Windows on ARM has no static binaries, but requiring the package is safe,
-    // so the PATH fallback in resolveBackend can take over.
+    // Windows on ARM uses the verified x64 pair with OS emulation.
     ['win32', 'arm64', true],
     ['linux', 'arm64', true],
     ['darwin', 'arm64', true],
@@ -73,6 +71,138 @@ test('static tools are only required where ffprobe-static does not abort the pro
     ['win32', 'mips', false],
     ['freebsd', 'x64', false],
   ]) assert.equal(staticToolsSupported(platform, arch), expected, `${platform}/${arch}`);
+});
+
+test('executable legacy media caches cannot bypass verification, including offline', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'veo-unverified-media-'));
+  try {
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      const file = path.join(directory, `${name}${exeSuffix()}`);
+      await writeFile(file, 'unverified binary');
+      await chmod(file, 0o755);
+    }
+    let installs = 0;
+    const options = { directory, find: async () => undefined,
+      install: async () => { installs++; return directory; } };
+    await assert.rejects(resolveMediaTools({ ...options, offline: true }), /SHA-256 verification/);
+    assert.equal(installs, 0);
+    assert.equal(await resolveMediaTools(options), directory);
+    assert.equal(installs, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+async function cachePathFixture(t) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'veo-cache-path-'));
+  const keys = ['LOCALAPPDATA', 'XDG_CACHE_HOME', 'HOME', 'VEO_FFMPEG_PATH', 'VEO_YT_DLP_PATH'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  process.env.LOCALAPPDATA = root;
+  process.env.XDG_CACHE_HOME = root;
+  process.env.HOME = root;
+  delete process.env.VEO_FFMPEG_PATH;
+  delete process.env.VEO_YT_DLP_PATH;
+  t.after(async () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  const cache = backendCacheDirectory();
+  assert.ok(cache.startsWith(`${root}${path.sep}`), 'The test cache must remain inside the temporary fixture.');
+  const external = path.join(root, 'system');
+  await mkdir(cache, { recursive: true });
+  await mkdir(external);
+  for (const directory of [cache, external]) {
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      const file = path.join(directory, `${name}${exeSuffix()}`);
+      await writeFile(file, 'unverified fixture binary');
+      await chmod(file, 0o755);
+    }
+  }
+  return { root, cache, external };
+}
+
+test('PATH search skips rejected cache tools and continues to external system tools', async t => {
+  const { cache, external } = await cachePathFixture(t);
+  const find = (names, options) => findOnPath(names, { ...options, directories: [cache, external] });
+  assert.equal(await resolveMediaTools({ directory: cache, find, offline: true }), external);
+  const report = await inspectBackend({ find });
+  for (const name of ['ffmpeg', 'ffprobe']) {
+    assert.equal(report[name].source, 'path');
+    assert.equal(report[name].path, path.join(external, `${name}${exeSuffix()}`));
+    assert.equal(report[name].present, true);
+  }
+});
+
+test('injected PATH lookup cannot treat rejected managed-cache files as system tools', async t => {
+  const { cache } = await cachePathFixture(t);
+  let installs = 0;
+  const find = async names => path.join(cache, `${names[0]}${exeSuffix()}`);
+  const options = { directory: cache, find, install: async () => { installs++; return cache; } };
+  await assert.rejects(resolveMediaTools({ ...options, offline: true }), /SHA-256 verification/);
+  assert.equal(installs, 0);
+  assert.equal(await resolveMediaTools(options), cache);
+  assert.equal(installs, 1);
+  const report = await inspectBackend({ find });
+  for (const name of ['ffmpeg', 'ffprobe']) {
+    assert.equal(report[name].source, 'cache');
+    assert.equal(report[name].present, false);
+    assert.equal(report[name].verified, false);
+  }
+});
+
+test('symlink aliases cannot reclassify damaged cache tools as trusted PATH tools', async t => {
+  const { root, cache, external } = await cachePathFixture(t);
+  if (process.platform === 'darwin') {
+    // APFS normally permits this case alias while realpath preserves the actual
+    // uppercase name. A case-sensitive volume falls back to the original name.
+    const lower = path.join(cache, 'ffmpeg');
+    const upper = path.join(cache, 'FFMPEG');
+    await rename(lower, upper);
+    if (!await stat(lower).then(info => info.isFile(), () => false)) await rename(upper, lower);
+  }
+  const alias = path.join(root, 'cache-alias');
+  await symlink(cache, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const findAlias = async names => path.join(alias, `${names[0]}${exeSuffix()}`);
+  await assert.rejects(resolveMediaTools({ directory: cache, find: findAlias, offline: true }), /SHA-256 verification/);
+  const report = await inspectBackend({ find: findAlias });
+  for (const name of ['ffmpeg', 'ffprobe']) {
+    assert.equal(report[name].source, 'cache');
+    assert.equal(report[name].present, false);
+    assert.equal(report[name].verified, false);
+  }
+  const find = (names, options) => findOnPath(names, { ...options, directories: [alias, external] });
+  assert.equal(await resolveMediaTools({ directory: cache, find, offline: true }), external);
+});
+
+test('explicit media overrides remain trusted even when the same cache failed verification', async t => {
+  const { cache } = await cachePathFixture(t);
+  process.env.VEO_FFMPEG_PATH = cache;
+  const find = async () => { throw new Error('Explicit overrides must not search PATH.'); };
+  assert.equal(await resolveMediaTools({ directory: cache, find, offline: true }), cache);
+  const report = await inspectBackend({ find });
+  for (const name of ['ffmpeg', 'ffprobe']) {
+    assert.equal(report[name].source, 'override');
+    assert.equal(report[name].present, true);
+  }
+});
+
+test('an outward cache symlink does not blacklist a genuine external system binary', async t => {
+  const { cache, external } = await cachePathFixture(t);
+  const cached = path.join(cache, `ffmpeg${exeSuffix()}`);
+  await rm(cached);
+  try { await symlink(path.join(external, `ffmpeg${exeSuffix()}`), cached, 'file'); }
+  catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) { t.skip('File symlinks are unavailable on this host.'); return; }
+    throw error;
+  }
+  const find = (names, options) => findOnPath(names, { ...options, directories: [cache, external] });
+  assert.equal(await resolveMediaTools({ directory: cache, find, offline: true }), external);
+  const report = await inspectBackend({ find });
+  for (const name of ['ffmpeg', 'ffprobe']) {
+    assert.equal(report[name].source, 'path');
+    assert.equal(report[name].path, path.join(external, `${name}${exeSuffix()}`));
+    assert.equal(report[name].present, true);
+  }
 });
 
 test('PATH discovery finds executables and ignores non-absolute entries', async () => {

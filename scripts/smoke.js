@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +41,13 @@ let requests = 0;
 try {
   const toolCache = path.join(root, 'smoke-tools');
   await mkdir(toolCache);
-  const mediaDirectory = await resolveMediaTools({ directory: toolCache, offline: true });
+  const mediaDirectory = await resolveMediaTools({ directory: toolCache });
+  if (process.platform !== 'win32' && mediaDirectory === toolCache) {
+    // A valid managed cache with lost executable bits must be repairable offline.
+    for (const name of ['ffmpeg', 'ffprobe']) await chmod(path.join(toolCache, name), 0o600);
+    assert.equal(await resolveMediaTools({ directory: toolCache, offline: true,
+      find: async () => { throw new Error('Verified cache must not need PATH'); } }), toolCache);
+  }
   const ffmpeg = path.join(mediaDirectory, `ffmpeg${exeSuffix()}`);
   const source = path.join(root, 'fixture.mp4');
   assert.equal(await run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=blue:s=640x360:r=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '2', '-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', source]), 0);
@@ -111,12 +117,14 @@ try {
   await writeFile(list, `# Own generated videos\n${url}\n\n${url.replace('original-title.mp4', 'recover.mp4')}\n`);
   const fromList = await capture(process.execPath, [cli, '--batch-file', list, '--profile', 'small', '--json']);
   assert.equal(fromList.code, 1, fromList.stderr);
-  assert.deepEqual(fromList.stdout.trim().split('\n').map(line => JSON.parse(line).status).sort(), ['failed', 'saved']);
-  const retryFile = fromList.stderr.match(/--retry-failed "([^"]+)"/)[1];
+  const listResults = fromList.stdout.trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(listResults.map(result => result.status).sort(), ['failed', 'saved']);
+  const retryId = listResults.find(result => result.status === 'failed').runId;
+  assert.match(retryId, /^[a-z0-9]{6}$/);
   recovered = true;
   const otherCwd = path.join(root, 'other-cwd');
   await mkdir(otherCwd);
-  const retried = await capture(process.execPath, [cli, '--retry-failed', retryFile, '--json'], otherCwd);
+  const retried = await capture(process.execPath, [cli, '--retry-failed', retryId, '--json'], otherCwd);
   assert.equal(retried.code, 0, retried.stderr);
   const retryResult = JSON.parse(retried.stdout.trim());
   assert.equal(retryResult.status, 'saved');

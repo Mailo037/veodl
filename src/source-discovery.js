@@ -147,7 +147,9 @@ function createCdp(socket) {
 }
 
 async function findDebuggerPort(directory, child, signal) {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  // Cold Chromium startup on Windows runners can exceed eight seconds.
+  // The caller's scan deadline and cancellation still bound this wait.
+  for (let attempt = 0; attempt < 300; attempt++) {
     signal?.throwIfAborted();
     if (child.exitCode !== null) throw new Error('The browser exited before source discovery started.');
     const text = await readFile(path.join(directory, 'DevToolsActivePort'), 'utf8').catch(() => null);

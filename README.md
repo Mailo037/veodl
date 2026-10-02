@@ -770,12 +770,15 @@ A missing system FFmpeg is not a warning when the selected media tools work.
 
 YouTube, X/Twitter, TikTok, Vimeo, Reddit, Instagram, and [many other yt-dlp sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) are supported **when publicly accessible and technically available**. Support changes with websites, regions, rate limits, and backend versions; it is not a guarantee that every URL will work.
 
-Official standalone yt-dlp is acquired on first download and cached outside the package directory; help, version and plain doctor never download the backend. The release is pinned and SHA-256 verified against hashes shipped with this package. FFmpeg and FFprobe are normally supplied by the optional `ffmpeg-static` and `ffprobe-static` dependencies during npm installation. If these are absent and no local pair is available, veo installs `ffmpeg-static@5.3.0` and a platform-specific `@ffprobe-installer` package in a temporary cache project, checks that both programs run, and saves them in its backend cache. Media packages use npm/upstream HTTPS distribution, not the yt-dlp pinned-hash guarantee. These binaries have their own licenses; see their upstream packages. No Python installation is needed on supported standalone platforms.
+Official standalone yt-dlp is acquired on first download and cached outside the package directory; help, version and plain doctor never download the backend. The release is pinned and SHA-256 verified against hashes shipped with this package. The npm package has no runtime dependencies and runs no installation scripts.
+
+When no trusted local FFmpeg/FFprobe pair is available, veo downloads both tools directly from the upstream [ffmpeg-static binary releases](https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1). Release URLs, compressed and executable SHA-256 hashes, and byte counts are pinned in the package. The complete pair and its license and README must pass verification before either executable is started. Later uses verify the cached pair again; legacy or damaged cached binaries are not accepted merely because they are executable. Most targets use FFmpeg 6.1.1; Windows ia32 uses the last available pair, FFmpeg 6.0. Old `FFMPEG_BINARIES_URL`, `FFMPEG_BINARY_RELEASE` and `FFMPEG_BIN` variables do not change these downloads. Use `VEO_FFMPEG_PATH` to choose a trusted installed pair explicitly.
+
+The downloaded binaries retain their separate upstream licenses. `FFmpeg.LICENSE` and `FFmpeg.README` are saved next to the cached tools, including upstream source and build information. The JavaScript CLI remains MIT licensed. No Python installation is needed on supported standalone platforms.
 
 The existing Node executable is explicitly enabled as yt-dlp's JavaScript runtime for YouTube. Local yt-dlp configuration and plugins are disabled for predictable execution. Arguments are passed without a shell.
 
-`ffmpeg-static` and `ffprobe-static` publish no Windows ARM64 binaries. veo no longer refuses
-that platform: it uses an FFmpeg/FFprobe pair found on `PATH`, including the usual
+Windows ARM64 uses an FFmpeg/FFprobe pair found on `PATH`, including the usual
 WinGet, Chocolatey and `C:\ffmpeg\bin` locations, or automatically downloads x64
 media tools for Windows 11's x64 emulation.
 
@@ -796,8 +799,7 @@ installed as a dependency. Termux with the pacman package manager uses
 `--noconfirm` instead. This needs a working Termux repository and internet access.
 No root access is needed. Later runs reuse the installed tools.
 
-Static FFmpeg dependencies are optional; `--omit=optional` can be added to the
-npm install command to skip attempting those desktop packages entirely.
+The npm installation does not pull in desktop FFmpeg packages.
 The system yt-dlp is maintained by Termux and is
 not pinned or hash-verified by veo. Explicit `VEO_YT_DLP_PATH` and
 `VEO_FFMPEG_PATH` overrides still take precedence.
@@ -880,7 +882,7 @@ finished download whose destination was unavailable is retried from the local ca
 without contacting the source again. It also confirms that real runs leave `veo history`
 entries, that finished runs clean up their record, and that `veo runs`/`veo stop` report
 nothing left behind. It needs network access once for yt-dlp acquisition; it downloads no
-third-party video. Unit tests require no network.
+third-party video. Prepare media tools with `veo doctor fix` before `npm test` on a fresh checkout; the tests themselves use local fixtures and require no network. CI explicitly prepares and verifies the native binary pair before testing.
 
 The published tarball only includes `bin/`, `src/`, package metadata, README and LICENSE.
 The lockfile is kept for reproducible development. There is no build step. npm makes the

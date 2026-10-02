@@ -24,7 +24,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+      - name: Prepare verified native media tools
+        run: |
+          node --input-type=module -e "import { resolveMediaTools } from './src/backend.js'; await resolveMediaTools({ find: async () => undefined, status: console.error });"
       - name: Unit tests
         run: npm test
       # Real end-to-end downloads through the actual CLI and yt-dlp backend.

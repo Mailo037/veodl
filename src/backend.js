@@ -1,15 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, constants } from 'node:fs';
-import { access, chmod, copyFile, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { access, chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { cacheBase } from './paths.js';
 import { compareVersions } from './version.js';
-import { hasTermuxEjs, installTermuxTools, installMediaTools, runSetup } from './tool-setup.js';
+import { hasTermuxEjs, installTermuxTools, installMediaTools, verifiedMediaTools, runSetup } from './tool-setup.js';
 
-const require = createRequire(import.meta.url);
 export const TERMUX_SETUP = 'pkg install python-yt-dlp yt-dlp-ejs ffmpeg';
 export const RELEASE = '2026.08.19';
 const RELEASE_HOST = 'https://github.com/yt-dlp/yt-dlp/releases/download';
@@ -121,8 +119,7 @@ export function exeSuffix(platform = process.platform) {
   return platform === 'win32' ? '.exe' : '';
 }
 
-// ffprobe-static terminates the whole process for platforms it does not know,
-// so the static packages may only be required for combos it handles.
+// Retained for callers that inspect the desktop media-tool platform matrix.
 export function staticToolsSupported(platform = process.platform, arch = process.arch) {
   if (platform === 'win32') return ['x64', 'ia32', 'arm64'].includes(arch);
   if (platform === 'darwin') return ['x64', 'arm64'].includes(arch);
@@ -142,9 +139,9 @@ async function isExecutable(file) {
 }
 
 /**
- * Locate the first matching executable on PATH. Windows on ARM and minimal
- * containers cannot use the bundled static binaries, so a system ffmpeg is a
- * legitimate third source after the override and the managed cache.
+ * Locate the first matching executable on PATH. Native pinned media downloads
+ * support Windows ARM64 through x64 emulation. A trusted system ffmpeg remains
+ * a legitimate third source after the override and the verified managed cache.
  * Git for Windows and WinGet ship ffmpeg in directories such as these but do
  * not always extend the PATH that a Node process inherits.
  */
@@ -162,7 +159,32 @@ export function wellKnownMediaDirectories({ platform = process.platform, env = p
   ].filter(Boolean);
 }
 
-export async function findOnPath(names, { platform = process.platform, env = process.env, directories } = {}) {
+function normalizedPath(file) {
+  const resolved = path.resolve(file);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function excludedPath(file, excludeFiles) {
+  if (!file || !excludeFiles.length) return false;
+  const resolved = normalizedPath(file);
+  if (excludeFiles.some(excluded => normalizedPath(excluded) === resolved)) return true;
+  const canonical = await realpath(file).catch(() => undefined);
+  const parent = await realpath(path.dirname(file)).catch(() => undefined);
+  const entry = parent && path.join(parent, path.basename(file));
+  for (const excluded of excludeFiles) {
+    const directory = await realpath(path.dirname(excluded)).catch(() => undefined);
+    if (!directory) continue;
+    // Resolve directory aliases, but do not follow a rejected cache file's
+    // outward symlink and accidentally blacklist its genuine system target.
+    const info = await lstat(excluded).catch(() => undefined);
+    const regular = info?.isFile() ? await realpath(excluded).catch(() => undefined) : undefined;
+    const target = normalizedPath(regular || path.join(directory, path.basename(excluded)));
+    if (entry && normalizedPath(entry) === target || canonical && normalizedPath(canonical) === target) return true;
+  }
+  return false;
+}
+
+export async function findOnPath(names, { platform = process.platform, env = process.env, directories, excludeFiles = [] } = {}) {
   const raw = platform === 'win32' ? env.PATH || env.Path || '' : env.PATH || '';
   const candidates = directories || [
     ...raw.split(platform === 'win32' ? ';' : ':').map(entry => entry.trim().replace(/^"(.*)"$/, '$1')),
@@ -174,7 +196,7 @@ export async function findOnPath(names, { platform = process.platform, env = pro
     for (const name of names) {
       for (const suffix of suffixes) {
         const candidate = path.join(directory, `${name}${suffix}`);
-        if (await isExecutable(candidate)) return candidate;
+        if (await isExecutable(candidate) && !await excludedPath(candidate, excludeFiles)) return candidate;
       }
     }
   }
@@ -328,29 +350,22 @@ async function stage(source, destination, signal) {
   }
 }
 
-async function managedMediaTools({ signal, status, directory }) {
-  if (!staticToolsSupported()) return 'the bundled static media tools do not support this platform';
-  let ffmpeg;
-  let ffprobe;
-  try {
-    ffmpeg = await executable(require('ffmpeg-static'), 'ffmpeg-static');
-    ffprobe = await executable(require('ffprobe-static').path, 'ffprobe-static');
-  } catch (cause) {
-    return `the bundled static media tools are unusable (${cause.message})`;
+async function managedMediaTools({ signal, directory }) {
+  if (!await verifiedMediaTools({ signal, directory })) {
+    return 'the managed media tools are missing or failed SHA-256 verification';
   }
-  const suffix = exeSuffix();
-  await stage(ffmpeg, path.join(directory, `ffmpeg${suffix}`), signal);
-  await stage(ffprobe, path.join(directory, `ffprobe${suffix}`), signal);
+  if (process.platform !== 'win32') {
+    for (const name of ['ffmpeg', 'ffprobe']) await chmod(path.join(directory, name), 0o755);
+  }
   return null;
 }
 
 /**
  * Resolve a location that contains both ffmpeg and ffprobe for
- * --ffmpeg-location. Precedence: explicit override, bundled static binaries,
- * then a system installation (which is what Windows on ARM needs, because
- * ffmpeg-static and ffprobe-static ship no arm64 Windows binaries).
+ * --ffmpeg-location. Precedence: explicit override, verified managed cache,
+ * then a system installation. Missing desktop tools use pinned downloads.
  */
-export async function resolveMediaTools({ signal, status = () => {}, statusDone = () => {}, directory, offline = false,
+export async function resolveMediaTools({ signal, status = () => {}, statusDone = () => {}, directory = cacheDirectory(), offline = false,
   find = findOnPath, managed = managedMediaTools, install = installMediaTools } = {}) {
   const preparing = 'Preparing ffmpeg and ffprobe…';
   let currentStatus;
@@ -372,11 +387,13 @@ export async function resolveMediaTools({ signal, status = () => {}, statusDone 
     }
     const problem = await managed({ signal, status: report, directory });
     if (!problem) { finish('done'); return directory; }
-    // A previous run may already have staged a working pair into the cache.
-    if (await isExecutable(path.join(directory, `ffmpeg${suffix}`))
-      && await isExecutable(path.join(directory, `ffprobe${suffix}`))) { finish('done'); return directory; }
-    const ffmpeg = await find(['ffmpeg']);
-    const ffprobe = await find(['ffprobe']);
+    const excludeFiles = ['ffmpeg', 'ffprobe'].map(name => path.join(directory, `${name}${suffix}`));
+    const systemTool = async name => {
+      const found = await find([name], { excludeFiles });
+      return await excludedPath(found, excludeFiles) ? undefined : found;
+    };
+    const ffmpeg = await systemTool('ffmpeg');
+    const ffprobe = await systemTool('ffprobe');
     if (!ffmpeg || !ffprobe) {
       if (!offline) {
         const location = await install({ signal, status: report, directory, find, stage });
@@ -394,6 +411,7 @@ export async function resolveMediaTools({ signal, status = () => {}, statusDone 
       return path.dirname(ffmpeg);
     }
     report('Copying system ffmpeg and ffprobe into the backend cache…');
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     await stage(ffmpeg, path.join(directory, `ffmpeg${suffix}`), signal);
     await stage(ffprobe, path.join(directory, `ffprobe${suffix}`), signal);
     finish('done');
@@ -457,17 +475,25 @@ export async function inspectBackend({ signal, platform = process.platform, arch
   } catch (error) {
     report.errors.push(error.message);
   }
+  const cacheVerified = platform !== 'android' && !override
+    && await verifiedMediaTools({ directory, platform, arch, signal });
+  const excludeFiles = platform === 'android' ? []
+    : ['ffmpeg', 'ffprobe'].map(name => path.join(directory, `${name}${suffix}`));
   for (const name of ['ffmpeg', 'ffprobe']) {
     const cached = path.join(directory, `${name}${suffix}`);
     let entry;
     if (override) {
       const file = path.join(override, `${name}${suffix}`);
       entry = { source: 'override', path: file, present: await isExecutable(file) };
-    } else if (platform !== 'android' && await isExecutable(cached)) {
-      entry = { source: 'cache', path: cached, present: true };
+    } else if (cacheVerified) {
+      entry = { source: 'cache', path: cached, present: await isExecutable(cached), verified: true };
     } else {
-      const found = await find([name]);
-      entry = { source: found ? 'path' : 'missing', path: found, present: Boolean(found) };
+      const candidate = await find([name], { excludeFiles });
+      const found = await excludedPath(candidate, excludeFiles) ? undefined : candidate;
+      entry = found ? { source: 'path', path: found, present: true, verified: false }
+        : platform !== 'android' && await lstat(cached).then(() => true, () => false)
+          ? { source: 'cache', path: cached, present: false, verified: false }
+          : { source: 'missing', path: undefined, present: false, verified: false };
     }
     report[name] = entry;
   }
@@ -478,10 +504,8 @@ export async function inspectBackend({ signal, platform = process.platform, arch
  * Resolve native tools, installing missing tools on first use (unless offline).
  * VEO_YT_DLP_PATH: trusted executable file; bypasses acquisition/pinned hash checks.
  * VEO_FFMPEG_PATH: directory containing both ffmpeg[.exe] and ffprobe[.exe].
- * Relative overrides resolve against cwd. ffmpeg-static's own FFMPEG_BIN
- * override is honored through its normal module API.
- * Media tools fall back to a system installation when the static packages
- * cannot serve the current platform (notably Windows on ARM).
+ * Relative overrides resolve against cwd. Trusted system installations remain
+ * available when the managed cache is absent or cannot serve this platform.
  * onStatus receives plain strings. Throws on cancellation or acquisition failure.
  */
 export async function resolveBackend({ signal, onStatus, onStatusDone, offline = false, platform = process.platform, find = findOnPath,
