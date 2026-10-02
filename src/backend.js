@@ -169,10 +169,17 @@ async function excludedPath(file, excludeFiles) {
   const resolved = normalizedPath(file);
   if (excludeFiles.some(excluded => normalizedPath(excluded) === resolved)) return true;
   const canonical = await realpath(file).catch(() => undefined);
-  if (!canonical) return false;
+  const parent = await realpath(path.dirname(file)).catch(() => undefined);
+  const entry = parent && path.join(parent, path.basename(file));
   for (const excluded of excludeFiles) {
-    const target = await realpath(excluded).catch(() => undefined);
-    if (target && normalizedPath(target) === normalizedPath(canonical)) return true;
+    const directory = await realpath(path.dirname(excluded)).catch(() => undefined);
+    if (!directory) continue;
+    // Resolve directory aliases, but do not follow a rejected cache file's
+    // outward symlink and accidentally blacklist its genuine system target.
+    const info = await lstat(excluded).catch(() => undefined);
+    const regular = info?.isFile() ? await realpath(excluded).catch(() => undefined) : undefined;
+    const target = normalizedPath(regular || path.join(directory, path.basename(excluded)));
+    if (entry && normalizedPath(entry) === target || canonical && normalizedPath(canonical) === target) return true;
   }
   return false;
 }
