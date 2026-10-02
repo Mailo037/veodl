@@ -12,6 +12,7 @@ All notable changes to veo. This project follows [Semantic Versioning](https://s
 - Prevent rejected managed-cache binaries from being accepted again through PATH or a symlink alias; continue searching for external system tools.
 - Keep Smolish cookie environment variables out of media-tool probe processes.
 - Retry completed local transfers without contacting the original source, including selected-source retries, while retaining cache expiry and path validation.
+- Allow up to 30 seconds for Chromium's debugging connection on cold starts, while retaining the source scan's overall deadline and cancellation.
 
 ## 1.12.0
 
