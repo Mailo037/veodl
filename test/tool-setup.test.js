@@ -71,7 +71,8 @@ test('desktop missing-media fallback obeys offline, cache and system-tool preced
     assert.equal(installs, 0);
     assert.equal(await resolveMediaTools(options), directory);
     assert.equal(installs, 1);
-    await resolveMediaTools({ ...options, find: async names => path.join(directory, names[0]) });
+    const systemDirectory = `${directory}-system`;
+    await resolveMediaTools({ ...options, find: async names => path.join(systemDirectory, names[0]) });
     assert.equal(installs, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

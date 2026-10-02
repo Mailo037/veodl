@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, constants } from 'node:fs';
-import { access, chmod, copyFile, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -139,9 +139,9 @@ async function isExecutable(file) {
 }
 
 /**
- * Locate the first matching executable on PATH. Windows on ARM and minimal
- * containers cannot use the bundled static binaries, so a system ffmpeg is a
- * legitimate third source after the override and the managed cache.
+ * Locate the first matching executable on PATH. Native pinned media downloads
+ * support Windows ARM64 through x64 emulation. A trusted system ffmpeg remains
+ * a legitimate third source after the override and the verified managed cache.
  * Git for Windows and WinGet ship ffmpeg in directories such as these but do
  * not always extend the PATH that a Node process inherits.
  */
@@ -159,7 +159,25 @@ export function wellKnownMediaDirectories({ platform = process.platform, env = p
   ].filter(Boolean);
 }
 
-export async function findOnPath(names, { platform = process.platform, env = process.env, directories } = {}) {
+function normalizedPath(file) {
+  const resolved = path.resolve(file);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function excludedPath(file, excludeFiles) {
+  if (!file || !excludeFiles.length) return false;
+  const resolved = normalizedPath(file);
+  if (excludeFiles.some(excluded => normalizedPath(excluded) === resolved)) return true;
+  const canonical = await realpath(file).catch(() => undefined);
+  if (!canonical) return false;
+  for (const excluded of excludeFiles) {
+    const target = await realpath(excluded).catch(() => undefined);
+    if (target && normalizedPath(target) === normalizedPath(canonical)) return true;
+  }
+  return false;
+}
+
+export async function findOnPath(names, { platform = process.platform, env = process.env, directories, excludeFiles = [] } = {}) {
   const raw = platform === 'win32' ? env.PATH || env.Path || '' : env.PATH || '';
   const candidates = directories || [
     ...raw.split(platform === 'win32' ? ';' : ':').map(entry => entry.trim().replace(/^"(.*)"$/, '$1')),
@@ -171,7 +189,7 @@ export async function findOnPath(names, { platform = process.platform, env = pro
     for (const name of names) {
       for (const suffix of suffixes) {
         const candidate = path.join(directory, `${name}${suffix}`);
-        if (await isExecutable(candidate)) return candidate;
+        if (await isExecutable(candidate) && !await excludedPath(candidate, excludeFiles)) return candidate;
       }
     }
   }
@@ -362,8 +380,13 @@ export async function resolveMediaTools({ signal, status = () => {}, statusDone 
     }
     const problem = await managed({ signal, status: report, directory });
     if (!problem) { finish('done'); return directory; }
-    const ffmpeg = await find(['ffmpeg']);
-    const ffprobe = await find(['ffprobe']);
+    const excludeFiles = ['ffmpeg', 'ffprobe'].map(name => path.join(directory, `${name}${suffix}`));
+    const systemTool = async name => {
+      const found = await find([name], { excludeFiles });
+      return await excludedPath(found, excludeFiles) ? undefined : found;
+    };
+    const ffmpeg = await systemTool('ffmpeg');
+    const ffprobe = await systemTool('ffprobe');
     if (!ffmpeg || !ffprobe) {
       if (!offline) {
         const location = await install({ signal, status: report, directory, find, stage });
@@ -447,6 +470,8 @@ export async function inspectBackend({ signal, platform = process.platform, arch
   }
   const cacheVerified = platform !== 'android' && !override
     && await verifiedMediaTools({ directory, platform, arch, signal });
+  const excludeFiles = platform === 'android' ? []
+    : ['ffmpeg', 'ffprobe'].map(name => path.join(directory, `${name}${suffix}`));
   for (const name of ['ffmpeg', 'ffprobe']) {
     const cached = path.join(directory, `${name}${suffix}`);
     let entry;
@@ -456,7 +481,8 @@ export async function inspectBackend({ signal, platform = process.platform, arch
     } else if (cacheVerified) {
       entry = { source: 'cache', path: cached, present: await isExecutable(cached), verified: true };
     } else {
-      const found = await find([name]);
+      const candidate = await find([name], { excludeFiles });
+      const found = await excludedPath(candidate, excludeFiles) ? undefined : candidate;
       entry = found ? { source: 'path', path: found, present: true, verified: false }
         : platform !== 'android' && await lstat(cached).then(() => true, () => false)
           ? { source: 'cache', path: cached, present: false, verified: false }
