@@ -117,12 +117,14 @@ try {
   await writeFile(list, `# Own generated videos\n${url}\n\n${url.replace('original-title.mp4', 'recover.mp4')}\n`);
   const fromList = await capture(process.execPath, [cli, '--batch-file', list, '--profile', 'small', '--json']);
   assert.equal(fromList.code, 1, fromList.stderr);
-  assert.deepEqual(fromList.stdout.trim().split('\n').map(line => JSON.parse(line).status).sort(), ['failed', 'saved']);
-  const retryFile = fromList.stderr.match(/--retry-failed "([^"]+)"/)[1];
+  const listResults = fromList.stdout.trim().split('\n').map(line => JSON.parse(line));
+  assert.deepEqual(listResults.map(result => result.status).sort(), ['failed', 'saved']);
+  const retryId = listResults.find(result => result.status === 'failed').runId;
+  assert.match(retryId, /^[a-z0-9]{6}$/);
   recovered = true;
   const otherCwd = path.join(root, 'other-cwd');
   await mkdir(otherCwd);
-  const retried = await capture(process.execPath, [cli, '--retry-failed', retryFile, '--json'], otherCwd);
+  const retried = await capture(process.execPath, [cli, '--retry-failed', retryId, '--json'], otherCwd);
   assert.equal(retried.code, 0, retried.stderr);
   const retryResult = JSON.parse(retried.stdout.trim());
   assert.equal(retryResult.status, 'saved');
