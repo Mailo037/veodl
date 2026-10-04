@@ -33,7 +33,7 @@ try {
     assert.ok(urlLines[2].trimEnd().endsWith('…'), screen);
     assert.equal(urlLines[3].trimEnd(), 'Reading video: done', screen);
     assert.equal(history.split('Reading video: done').length - 1, 1, history);
-    assert.match(screen, /\[[=-]+\]/);
+    assert.match(screen, /\[[=-]+\]|[█░]{20}/);
     for (const value of ['12.6 MiB/s', '90.0 MiB / ~1.0 GiB', 'ETA 1:17']) assert.ok(screen.includes(value), screen);
     assert.equal(term.buffer.active.type, 'normal');
     process.stdout.write(`PASS ${cols}x${rows}: URL limited to 3 rows, normal flow, bar, speed, size, ETA\n`);

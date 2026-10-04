@@ -34,7 +34,7 @@ From this checkout, without publishing:
 
 ```bash
 npm install
-node bin/veo.js --help
+node bin/veo.js --help    # veo help all lists every option
 npm link
 veo "https://example.com/video.mp4"
 ```
@@ -54,50 +54,109 @@ regular command arguments; veo never starts a prompt in a script.
 ## Usage
 
 ```text
-veo <url> [<url>...] [options]
+Usage:
+  veo <url> [<url>...] [options]
 
-Options:
-  -q, --quality <quality>   best, 2160p, 1440p, 1080p, 720p, 480p, 360p
-  -o, --output <path>       Output directory (default: current working directory)
-  -r, --rename <name>       Filename without extension; * inserts the original title
-  --closest-quality         Nearest available resolution instead of an upper bound
-  --open                    Open the saved file with your default app
-  --audio                   Audio only (MP3 by default)
-  --format <format>         Video: mp4, mkv, webm, mov
-                            Audio: mp3, m4a, aac, opus, flac, wav
-  --recode                  Explicit video conversion (requires --format)
-  --playlist-concurrency <n> Parallel playlist entries, 1-4 (default: 2)
-  --playlist                Download every entry of a playlist or channel URL
-  -N, --concurrent-fragments <n>   Parallel fragments, 1-64 (default: 8; 17-64 experimental)
-  --experimental-fragments  Explicitly accept experimental values above 16
-  --subs                    Download subtitles (default languages: en)
-  --auto-subs               Include automatically generated subtitles
-  --sub-langs <langs>       Subtitle languages, e.g. "de,en" (manual unless --auto-subs)
-  --sub-format <format>     Prefer subtitle formats, e.g. srt/vtt/best
-  --list-subs               Show manual and automatic subtitle availability
-  --embed-subs              Embed subtitles into the video file
-  --embed-metadata          Embed title, date and other metadata
-  --embed-thumbnail         Embed the thumbnail
-  --sponsorblock-remove <categories>   e.g. "sponsor,selfpromo"
-  --section <range>         Only a time range, e.g. "*10:00-12:00"
-  --cookies <file>          Netscape cookie file, for content you may access
+Download:
+  -q, --quality <quality>     Video quality (best, 2160p, 1440p, 1080p, 720p, 480p, 360p)
+                              Numeric qualities are an upper bound: -q 720p never
+                              downloads 2160p.
+  --closest-quality           Pick the nearest available resolution, above or below
+  -o, --output <path>         Output directory (default: current directory)
+  -r, --rename <name>         Filename without extension; * inserts the original title
+  --audio                     Download audio only (default: mp3)
+  --format <format>           Video: mp4, mkv, webm, mov; audio: mp3, m4a, aac, opus, flac, wav
+                              Video uses lossless remux; incompatible codecs fail.
+  --compatible                Ensure MP4 H.264/AAC; converts only when needed (may lose quality)
+  --recode                    Allow video conversion (requires --format; may lose quality)
+  --open                      Open the saved file with your default app
+  --resume                    Keep partial data and continue an interrupted download
+  --skip-existing             Skip matching downloads still present on disk
+  --section <range>           Download only a time range, e.g. "*10:00-12:00"
+  --sponsorblock-remove <categories>
+                              Remove sponsor segments, e.g. "sponsor,selfpromo"
+
+Subtitles and metadata:
+  --subs                      Download subtitles (default languages: en)
+  --auto-subs                 Include automatically generated subtitles
+  --sub-langs <langs>         Subtitle languages, e.g. "de,en" (manual unless --auto-subs)
+  --sub-format <format>       Preferred subtitle format, e.g. srt/vtt/best
+  --list-subs                 Show manual and automatic subtitle languages, then exit
+  --embed-subs                Embed subtitles into the video file
+  --embed-metadata            Embed title, date and other metadata
+  --embed-thumbnail           Embed the thumbnail
+
+Playlists and batches:
+  --playlist                  Download every entry of a playlist or channel URL
+  --playlist-items <list>     Select playlist entries, e.g. 1,3-5 (implies --playlist)
+  --playlist-concurrency <n>  Simultaneous playlist downloads (1-4; default: 2)
+  --concurrent-downloads <n>  Parallel URLs/batch entries (1-4; default: 2)
+  --batch-file <file>         Read URLs from a file (one per line; # comments)
+  --retry-failed <id|file>    Retry failed/unfinished items by run ID or job file
+
+Naming and privacy:
+  --filename-template <s>     Filename without extension, e.g. {index} - {title}
+  --folder-template <s>       Relative folders, e.g. {channel}/{year}
+  --neutral-filename          Use a random video name; omit title and naming templates
+  --incognito                 Save media without run IDs, history, stats or retry data
+
+Inspect before downloading:
+  --list-qualities            Show available video resolutions and exit
+  --list-qualitys             Alias for --list-qualities
+  --list-formats              Show the available formats and exit
+  --list-sources              Find video sources loaded by a web page and exit
+  --auto-list-sources         Search after no video is found (default: on)
+  --source <n>                Select source number from that page (also for scripts)
+  --deep-scan                 Check every media candidate found during source search
+  --timeout <duration>        Source search deadline, e.g. 30, 30s or 2m (5s-10m)
+  --dry-run                   Show what would be downloaded and exit
+
+Network and performance:
+  -N, --concurrent-fragments <n>
+                              Parallel fragments (1-64; default: 8); 17-64 are experimental
+  --experimental-fragments    Explicitly accept experimental values above 16
+                              Otherwise requires terminal confirmation before download
+  --adaptive-concurrency      Reduce connections and retry temporary failures (default: on)
+  --check-space               Estimate cache/output space before downloading (default: on)
+  --cookies <file>            Netscape cookie file, for content you may access
   --cookies-from-browser <browser[:profile]>
-  --resume                  Keep partial data and continue an interrupted download
-  --incognito               Save media without run ID, history, stats or retry data
-  --neutral-filename        Optional random filename instead of title and templates
-  --list-qualities          Show available video resolutions and exit
-  --list-formats            Show available formats and exit
-  --dry-run                 Show what would be downloaded and exit
-  --verify                  Probe saved media files with FFprobe (default: off)
-  --json                    One JSON object per URL instead of prose
-  --profile <name>          Use a named profile from the config file
-  --batch-file <file>       Read one URL per line (blank lines and # comments ignored)
-  --retry-failed <id|file>  Retry failed/unfinished downloads by run ID or job file
-  --playlist-items <list>   Select entries, e.g. 1,3-5 (implies --playlist)
-  --skip-existing          Skip matching downloads that are still on disk
-  --no-<boolean-option>    Disable a default, e.g. --no-open or --no-audio
-  -v, --version             Show installed version (also: veo version)
-  -h, --help                Show help
+                              Read cookies from an installed browser
+
+Output and scripting:
+  --json                      Print one JSON object per URL instead of prose
+  --verify                    Probe saved media files with FFprobe (default: off)
+  --timings                   Show phase timings (default: on; --no-timings disables)
+  --no-color                  Disable terminal colors (also respects NO_COLOR)
+  --profile <name>            Apply a named config profile
+  --no-<boolean-option>       Disable a stored boolean default, e.g. --no-open
+  -v, --version               Show installed version (also: veo version)
+  -h, --help                  Show help; veo help all lists every option and command
+
+Commands:
+  veo doctor                  Diagnose the local setup
+  veo update|up [--check]     Update veo itself with npm (up is a short alias)
+  veo history                 Show the last 5 downloads (--json for scripting)
+  veo history --failed --limit 20
+                              Filter and extend download history
+  veo retry --last            Retry the newest failed or unfinished job
+  veo runs [id]               List active runs; add --json for metadata and progress
+  veo stop [id]               Stop one run, or every active run
+  veo stats                   Show persistent download statistics
+  veo changes [<version>]     List release notes; --since <version> for newer changes
+  veo subs <url>              List available manual and automatic subtitles
+  veo inspect <file>          Read media metadata; --check-audio measures audio signal
+  veo inspect run <id>        Inspect saved files from a finished run by its id
+  veo backend update          Install a newer yt-dlp release (see veo backend --help)
+  veo flush                   Stop veo runs and clear temporary downloads and jobs
+  veo config edit|path|profiles|guide|check|show|reset
+                              Manage defaults and named profiles
+  veo config edit [--external|--terminal]
+                              Choose the configuration editor
+  veo profile [list|reset|name]
+                              Show, list or change the default profile
+  veo alias list|add|remove   Manage extra command names (wrappers calling veo)
+  veo uninstall [-p <name>]   Remove one alias, or everything with --yes
+  veo version                 Show the installed version
 ```
 
 ```bash

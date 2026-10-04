@@ -1,7 +1,7 @@
 import { commandOutput } from './output.js';
 import { readFile } from 'node:fs/promises';
 import { terminalColumns } from './terminal-size.js';
-import { wrap } from './progress.js';
+import { wordWrap } from './progress.js';
 import { compareVersions } from './version.js';
 import { packageVersion } from './updater.js';
 import { suggestOption } from './option-suggestions.js';
@@ -85,10 +85,18 @@ export function parseChangelog(markdown) {
   return releases.sort((left, right) => compareVersions(right.version, left.version));
 }
 
-/** Entry counts per section type, in the order the changelog lists them. */
+// Keep a Changelog order, so every release lists its sections the same way;
+// unknown section types follow in the order the changelog lists them.
+const SECTION_ORDER = ['Added', 'Changed', 'Deprecated', 'Removed', 'Fixed', 'Security'];
+const rank = type => { const index = SECTION_ORDER.indexOf(type); return index < 0 ? SECTION_ORDER.length : index; };
+const orderedSections = release => release.sections.filter(section => section.items.length)
+  .map((section, index) => ({ section, index }))
+  .sort((left, right) => rank(left.section.type) - rank(right.section.type) || left.index - right.index)
+  .map(({ section }) => section);
+
+/** Entry counts per section type, in canonical section order. */
 export function releaseCounts(release) {
-  return Object.fromEntries(release.sections.filter(section => section.items.length)
-    .map(section => [section.type, section.items.length]));
+  return Object.fromEntries(orderedSections(release).map(section => [section.type, section.items.length]));
 }
 
 const summary = counts => Object.entries(counts).map(([type, count]) => `${type} ${count}`).join(', ');
@@ -150,14 +158,13 @@ function bulletLines(entry, stream, depth) {
   // Notes are wrapped instead of shortened: a release note that loses its tail
   // because the terminal is narrow would be worse than useless.
   const columns = stream?.isTTY ? Math.max(24, terminalColumns(stream) - prefix.length - 1) : Infinity;
-  return wrap(entry.text, columns).split('\n').map((line, index) => (index ? hanging : prefix) + line);
+  return wordWrap(entry.text, columns).split('\n').map((line, index) => (index ? hanging : prefix) + line);
 }
 
 function releaseLines(release, stream, installed, header) {
   const lines = [];
   if (header) lines.push(release.version + (installed ? `  ${MARKER}` : ''));
-  for (const section of release.sections) {
-    if (!section.items.length) continue;
+  for (const section of orderedSections(release)) {
     lines.push(section.type);
     for (const entry of section.items) {
       lines.push(...bulletLines(entry, stream, 1));
@@ -179,10 +186,10 @@ export function formatChanges(selection, { current, stream } = {}) {
     const lines = [`veo changes (${plural(versions.length)}, newest first)`, ''];
     for (const release of versions) {
       const installed = release.version === current ? MARKER : '';
-      const row = `  ${release.version.padEnd(width)}  ${installed.padEnd(MARKER.length)}`;
+      const row = `  ${release.version.padEnd(width)}  ${installed.padEnd(MARKER.length)}`.trimEnd();
       const counts = summary(releaseCounts(release));
       // A release without entries must not leave trailing spaces in the column.
-      lines.push(counts ? `${row}  ${counts}` : row);
+      lines.push(counts ? `${row.padEnd(width + MARKER.length + 4)}  ${counts}` : row);
     }
     lines.push('');
     lines.push('Use veo changes <version> for one version, veo changes --since <version> for');
@@ -201,7 +208,7 @@ export function formatChanges(selection, { current, stream } = {}) {
   return `${lines.join('\n')}\n`;
 }
 
-const sectionsJson = release => release.sections.filter(section => section.items.length)
+const sectionsJson = release => orderedSections(release)
   .map(section => ({ type: section.type, items: section.items }));
 
 function changesJson(selection, current) {

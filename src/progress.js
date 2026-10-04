@@ -3,11 +3,12 @@ import { createTerminalTitle } from './terminal-title.js';
 import { terminalColumns } from './terminal-size.js';
 import { createInlineRegion } from './inline-region.js';
 
+const WARNING_STATUS = /^(?:Playback note:|Playback compatibility could not|Warning:)/;
 const PROCESSING_LABELS = { Merger: 'Merging audio/video', VideoRemuxer: 'Changing video container', VideoConvertor: 'Converting video', ExtractAudio: 'Converting audio', EmbedSubtitle: 'Embedding subtitles', Metadata: 'Writing metadata', EmbedThumbnail: 'Embedding thumbnail', MoveFiles: 'Preparing saved file' };
 
 export function styleText(stream, text, role = 'muted', enabled = true, env = process.env) {
   if (!enabled || !stream.isTTY || Object.hasOwn(env, 'NO_COLOR') || env.TERM === 'dumb') return text;
-  const codes = { muted: 90, title: 1, profile: 97, success: 32, error: 31 };
+  const codes = { muted: 90, title: 1, profile: 97, success: 32, warn: 33, error: 31, accent: 36 };
   return '\x1b[' + (codes[role] || 90) + 'm' + text + '\x1b[0m';
 }
 
@@ -45,6 +46,58 @@ export function wrap(text, width) {
   return [...lines, line].join('\n');
 }
 
+// Break at spaces; only a word wider than the line is split.
+export function wordWrap(text, width) {
+  if (!Number.isFinite(width)) return text;
+  const lines = [];
+  let line = '';
+  for (const word of text.split(/ +/)) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (cells(candidate) <= width) { line = candidate; continue; }
+    if (line) lines.push(line);
+    line = '';
+    const pieces = wrap(word, width).split('\n');
+    line = pieces.pop();
+    lines.push(...pieces);
+  }
+  return [...lines, line].join('\n');
+}
+
+/**
+ * A labelled path wrapped over several rows instead of shortened: a saved file
+ * name that loses its tail is the one detail a user cannot recover. Rows break
+ * after a path separator when one fits, and continue under the path's first
+ * column. Returns the path pieces; rows are `label + pieces[0]`, then indent.
+ */
+export function pathRows(stream, label, value) {
+  const safe = cleanText(value);
+  const width = stream.isTTY ? Math.max(1, terminalColumns(stream) - 1 - cells(label)) : Infinity;
+  if (width < 8 || cells(safe) <= width) return [safe];
+  const rows = [];
+  let rest = safe;
+  while (cells(rest) > width) {
+    let piece = '';
+    for (const char of rest) {
+      if (cells(piece + char) > width) break;
+      piece += char;
+    }
+    const separator = Math.max(piece.lastIndexOf('/'), piece.lastIndexOf('\\'));
+    if (separator >= width / 3) piece = piece.slice(0, separator + 1);
+    rows.push(piece);
+    rest = rest.slice(piece.length);
+  }
+  if (rest) rows.push(rest);
+  return rows;
+}
+
+// Block glyphs need a terminal that understands Unicode; C/POSIX locales and
+// dumb terminals keep the ASCII bar.
+export function supportsUnicode(stream, env = process.env) {
+  if (!stream.isTTY || env.TERM === 'dumb') return false;
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || '';
+  return !/^(?:C|POSIX)$/i.test(locale);
+}
+
 export function terminalText(stream, text) {
   return fit(cleanText(text), stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity);
 }
@@ -66,27 +119,53 @@ export function terminalTitle(stream, text) {
   return [...lines, line].join('\n');
 }
 
-export function formatProgress(data, { columns = Infinity, prefix = '' } = {}) {
+const BAR_WIDTH = 20;
+
+// Fixed-width fields keep the bar and statistics from jumping between updates.
+function progressBar(percent, size, { unicode, paint, frame }) {
+  const [full, empty] = unicode ? ['█', '░'] : ['=', '-'];
+  const wrapBar = text => unicode ? text : `[${text}]`;
+  if (percent === null) {
+    // Unknown total: a short block travels back and forth instead of an empty bar.
+    const block = Math.max(1, Math.min(3, size - 1));
+    const span = Math.max(1, size - block);
+    const step = frame % (span * 2);
+    const start = step < span ? step : span * 2 - step;
+    return wrapBar(paint(empty.repeat(start), 'muted') + paint(full.repeat(block), 'accent') + paint(empty.repeat(size - block - start), 'muted'));
+  }
+  const filled = Math.round(percent / 100 * size);
+  return wrapBar(paint(full.repeat(filled), 'accent') + paint(empty.repeat(size - filled), 'muted'));
+}
+
+/**
+ * Renders one progress update. `unicode` selects block glyphs and `paint(text,
+ * role)` colors the bar; both default to the plain ASCII form used in logs.
+ */
+export function formatProgress(data, { columns = Infinity, prefix = '', unicode = false, paint = text => text, frame = Math.floor(Date.now() / 120) } = {}) {
   const done = Number.isFinite(data.downloaded_bytes) ? data.downloaded_bytes : 0;
   const total = data.total_bytes || data.total_bytes_estimate;
   const estimated = !data.total_bytes && Boolean(data.total_bytes_estimate);
   const percent = total > 0 ? Math.max(0, Math.min(estimated && data.status !== 'finished' ? 99 : 100, done / total * 100)) : null;
   const eta = Number.isFinite(data.eta) ? `${Math.floor(data.eta / 60)}:${String(Math.floor(data.eta % 60)).padStart(2, '0')}` : '?';
-  const pct = `${estimated && data.status !== 'finished' ? '~' : ''}${percent === null ? '?' : percent.toFixed(0)}%`;
-  const size = `${estimated ? '~' : ''}${bytes(total)}`;
+  const pct = `${estimated && data.status !== 'finished' ? '~' : ''}${percent === null ? '?' : percent.toFixed(0)}%`.padStart(4);
+  const size = total > 0 ? `${bytes(done)} / ${estimated ? '~' : ''}${bytes(total)}` : `${bytes(done)} received`;
   const label = prefix ? cleanText(prefix) + ' ' : '';
   if (data.status === 'finished') return wrap(`${label}${bytes(done)} received; processing…`, columns);
-  const stats = [`${bytes(data.speed)}/s`, `${bytes(done)} / ${size}`, `ETA ${eta}`];
-  const barSize = Math.max(1, Math.min(20, Number.isFinite(columns) ? columns - cells(pct) - 3 : 20));
-  const filled = percent === null ? 0 : Math.round(percent / 100 * barSize);
-  const bar = `[${'='.repeat(filled)}${'-'.repeat(barSize - filled)}] ${pct}`;
-  const full = `${label}${bar}  ${stats.join('  ')}`;
-  if (cells(full) <= columns) return full;
+  const stats = [`${bytes(data.speed)}/s`.padStart(11), size.padStart(19), `ETA ${eta}`.padEnd(9)];
+  const decoration = unicode ? 1 : 3;
+  const barSize = Math.max(1, Math.min(BAR_WIDTH, Number.isFinite(columns) ? columns - cells(pct) - decoration : BAR_WIDTH));
+  const plainBar = `${progressBar(percent, barSize, { unicode, paint: text => text, frame })} ${pct}`;
+  const bar = `${progressBar(percent, barSize, { unicode, paint, frame })} ${pct}`;
+  const full = `${label}${plainBar} ${stats.join('  ')}`;
+  if (cells(full.trimEnd()) <= columns) return `${label}${bar} ${stats.join('  ')}`.trimEnd();
+  // Too narrow for aligned fields: keep one line without padding if possible.
+  const compact = stats.map(value => value.trim()).join('  ');
+  if (cells(`${label}${plainBar}  ${compact}`) <= columns) return `${label}${bar}  ${compact}`;
   const lines = [];
   if (label) lines.push(fit(label.trimEnd(), columns));
-  lines.push(wrap(bar, columns));
+  lines.push(cells(plainBar) <= columns ? bar : wrap(plainBar, columns));
   let statLine = '';
-  for (const stat of stats) {
+  for (const stat of stats.map(value => value.trim())) {
     if (statLine && cells(`${statLine}  ${stat}`) > columns) { lines.push(wrap(statLine, columns)); statLine = ''; }
     statLine += (statLine ? '  ' : '') + stat;
   }
@@ -157,6 +236,18 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
   };
   const stopAnimation = () => { if (animation) clearInterval(animation); animation = undefined; };
   const display = value => terminalText(stream, value);
+  // Status notes wrap at word boundaries: a hint cut off mid-option is useless.
+  // Like titles, at most three rows: a long hint stays whole, a pasted token does not flood the log.
+  const block = value => {
+    const width = stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity;
+    const rows = wordWrap(cleanText(value), width).split('\n');
+    if (rows.length <= 3) return rows;
+    return [...rows.slice(0, 2), fit(rows.slice(2).join(' '), width)];
+  };
+  const statusBlock = value => {
+    const role = WARNING_STATUS.test(cleanText(value).replace(/^(?:\[\d+\/\d+\] )+[^:]*: /, '')) ? 'warn' : 'muted';
+    return block(value).map(row => styleText(stream, row, role, color, env)).join('\n') + '\n';
+  };
   const animate = (label, owner) => {
     clear();
     if (!stream.isTTY) { stream.write(muted(label + '…') + '\n'); return; }
@@ -188,7 +279,8 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     append(() => muted(display(label)) + '\n');
     watchResize(undefined);
   };
-  const line = (data, prefix) => formatProgress(data, { prefix, columns: stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity });
+  const paint = (text, role) => text ? styleText(stream, text, role, color, env) : text;
+  const line = (data, prefix) => formatProgress(data, { prefix, columns: stream.isTTY ? Math.max(1, terminalColumns(stream) - 1) : Infinity, unicode: supportsUnicode(stream, env), paint });
   const draw = (data, prefix) => {
     if (region) { region.live(() => line(data, prefix)); return; }
     const render = () => renderLive(line(data, prefix));
@@ -266,7 +358,9 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
     item(index, total, title) {
       clear(); position = total > 1 ? `[${index}/${total}] ` : ''; hasItem = true; name = cleanText(title); streamName = ''; lastLog = 0;
       const titleText = `${position}${name}`;
-      const render = () => heading(terminalTitle(stream, titleText)) + '\n';
+      // The URL only identifies the request; the media title that follows is the heading.
+      const style = /^https?:\/\//i.test(name) ? muted : heading;
+      const render = () => style(terminalTitle(stream, titleText)) + '\n';
       if (region) region.source(render); else append(render);
       watchResize(undefined);
       phase = 'Starting…'; if (started) updateTitle();
@@ -301,7 +395,7 @@ export function createReporter(stream = process.stderr, { setTitle = createTermi
       else {
         clear();
         const status = phase;
-        append(() => muted(display(status)) + '\n');
+        append(() => statusBlock(status));
         watchResize(undefined);
       }
     },
