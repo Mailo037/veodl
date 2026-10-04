@@ -40,7 +40,8 @@ test('short help points to help all, which documents every option', async () => 
   assert.equal((await run(process.execPath, [cli, '--help'])).stdout, HELP);});
 
 test('README usage block matches veo help all', async () => {
-  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  // Windows checkouts may convert line endings; compare the text, not the line terminators.
+  const readme = (await readFile(new URL('../README.md', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   const block = readme.slice(readme.indexOf('```text\n', readme.indexOf('## Usage')) + 8);
   const expected = HELP_ALL.slice(HELP_ALL.indexOf('Usage:'), HELP_ALL.indexOf('\nRun veo without')).trimEnd();
   assert.equal(block.slice(0, block.indexOf('```')).trimEnd(), expected);
