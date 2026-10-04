@@ -57,7 +57,7 @@ export async function statsMain(args = [], { stdout = process.stdout, root = cac
   if (args[0] === '--json') stdout.write(`${JSON.stringify(stats)}\n`);
   else {
     const seconds = Math.floor(stats.elapsedMs / 1000);
-    stdout.write(`veo stats\n\nTracking since: ${stats.since || 'No downloads recorded yet'}\nVideos saved:   ${stats.videos}\nAudio saved:    ${stats.audio}\nTotal failures: ${stats.failed}\nSkipped:        ${stats.skipped}\nCancelled:      ${stats.cancelled}\nDownload time:  ${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s\n\nTime includes preparation, processing and saving. Active requests appear when finished.\n`);
+    stdout.write(`veo stats\n\nTracking since: ${stats.since || 'no downloads yet'}\nVideos saved:   ${stats.videos}\nAudio saved:    ${stats.audio}\nTotal failures: ${stats.failed}\nSkipped:        ${stats.skipped}\nCancelled:      ${stats.cancelled}\nDownload time:  ${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s\n\nTime includes preparation, processing and saving. Active requests appear when finished.\n`);
   }
   return 0;
 }

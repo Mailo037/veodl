@@ -1,5 +1,6 @@
 import { runPool, serialQueue, reducedLimit, formatTimings } from './execution.js';
-import { styleText, terminalText } from './progress.js';
+import { pathRows, styleText, wordWrap } from './progress.js';
+import { terminalColumns } from './terminal-size.js';
 import path from 'node:path';
 import { lstat, mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -126,8 +127,8 @@ export async function runJob(options, { download, reporter, signal, openFile, st
       const publish = async files => {
         if (!options.json) for (const target of files) {
           if (!published.has(target)) {
-            const display = terminalText(stdout, `Saved: ${cleanText(target)}`);
-            stdout.write(styleText(stdout, display.startsWith('Saved: ') ? `Saved: ${folderLink(stdout, target, display.slice(7))}` : display, 'success', options.color !== false) + '\n');
+            const rows = pathRows(stdout, 'Saved: ', target);
+            stdout.write(rows.map((row, line) => styleText(stdout, `${line ? '       ' : 'Saved: '}${folderLink(stdout, target, row)}`, 'success', options.color !== false)).join('\n') + '\n');
           }
           published.add(target);
         }
@@ -167,7 +168,12 @@ export async function runJob(options, { download, reporter, signal, openFile, st
         if (!signal?.aborted) failed++;
         item.files = [...new Set([...item.entries.flatMap(entry => entry.files || []), ...(error.files || [])])];
         if (options.json) stdout.write(`${JSON.stringify({ url: request.url, status: item.status, profile: request.profile || null, error: item.error, files: item.files, ...(runId ? { runId } : {}) })}\n`);
-        else stderr.write(styleText(stderr, terminalText(stderr, `veo: ${item.error} (${request.url})`), 'error', options.color !== false) + '\n');
+        else {
+          // Errors wrap instead of being shortened; the cause is usually at the end.
+          const message = cleanText(`veo: ${item.error} (${request.url})`);
+          const rows = stderr.isTTY ? wordWrap(message, Math.max(20, terminalColumns(stderr) - 1)).split('\n') : [message];
+          stderr.write(rows.map(row => styleText(stderr, row, 'error', options.color !== false)).join('\n') + '\n');
+        }
         if (error.verificationFailed && !options.json) for (const file of item.files) stderr.write(`Saved file retained: ${cleanText(file)}\n`);
       }
       if (recordStats) {

@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
-import { createReporter } from './progress.js';
+import { createReporter, pathRows } from './progress.js';
 import { openFile } from './open-file.js';
 import { maybeUpdateNotice, updateMain, UPDATE_HELP, defaultRegistry, packageVersion } from './updater.js';
 import { applyProfile, configMain, loadConfig, profileMain, selectedProfileName } from './config.js';
@@ -13,115 +13,10 @@ import { validateItems, describeEstimate } from './playlist.js';
 import { parseSourceTimeout } from './source-discovery.js';
 import { explainUnknownOption, optionSpellings, suggestOption } from './option-suggestions.js';
 import { retryOptions, runJob, jobFilePath } from './jobs.js';
+import { HELP, HELP_ALL } from './help.js';
 import { QUALITIES, VIDEO_FORMATS, AUDIO_FORMATS, validateUrl, readableError, cleanText, validateCookieFile, validateBrowserSpec, cookieFileWarning } from './utils.js';
 
-export const HELP = `veo - simple video downloader
-
-Usage:
-  veo <url> [<url>...] [options]
-
-Options:
-  -q, --quality <quality>   Video quality (best, 2160p, 1440p, 1080p, 720p, 480p, 360p)
-                           Numeric qualities are an upper bound: -q 720p never
-                           downloads 2160p. Use --closest-quality for the nearest
-                           available resolution instead.
-  -o, --output <path>       Output directory (default: current directory)
-  -r, --rename <name>       Filename without extension; * inserts the original title
-  --closest-quality         Pick the nearest available resolution, above or below
-  --open                   Open the saved file with your default app
-  --audio                  Download audio only (default: mp3)
-  --format <format>        Video: mp4, mkv, webm, mov; audio: mp3, m4a, aac, opus, flac, wav
-                           Video uses lossless remux; incompatible codecs fail.
-  --compatible             Ensure MP4 H.264/AAC; converts only when needed (may lose quality)
-  --recode                 Allow video conversion (requires --format; may lose quality)
-  --concurrent-downloads <n>  Parallel URLs/batch entries (1-4; default: 2)
-  --adaptive-concurrency   Reduce connections and retry temporary failures (default: on)
-  --filename-template <s>  Filename without extension, e.g. {index} - {title}
-  --folder-template <s>    Relative folders, e.g. {channel}/{year}
-  --check-space            Estimate cache/output space before downloading (default: on)
-  --timings                Show phase timings (default: on; --no-timings disables)
-  --no-color               Disable terminal colors (also respects NO_COLOR)
-  --playlist-concurrency <n>  Simultaneous playlist downloads (1-4; default: 2)
-  --playlist               Download every entry of a playlist or channel URL
-  -N, --concurrent-fragments <n>
-                           Parallel fragments (1-64; default: 8); 17-64 are experimental
-  --experimental-fragments  Explicitly accept experimental values above 16
-                           Otherwise requires terminal confirmation before download
-  --subs                   Download subtitles (default languages: en)
-  --auto-subs              Include automatically generated subtitles
-  --sub-langs <langs>      Subtitle languages, e.g. "de,en" (manual unless --auto-subs)
-  --sub-format <format>    Preferred subtitle format, e.g. srt/vtt/best
-  --list-subs              Show manual and automatic subtitle languages, then exit
-  --embed-subs             Embed subtitles into the video file
-  --embed-metadata         Embed title, date and other metadata
-  --embed-thumbnail        Embed the thumbnail
-  --sponsorblock-remove <categories>
-                           Remove sponsor segments, e.g. "sponsor,selfpromo"
-  --section <range>        Download only a time range, e.g. "*10:00-12:00"
-  --cookies <file>         Netscape cookie file, for content you may access
-  --cookies-from-browser <browser[:profile]>
-                           Read cookies from an installed browser
-  --resume                 Keep partial data and continue an interrupted download
-  --incognito              Save media without run IDs, history, stats or retry data
-  --neutral-filename       Use a random video name; omit title and naming templates
-  --list-qualities         Show available video resolutions and exit
-  --list-qualitys          Alias for --list-qualities
-  --list-formats           Show the available formats and exit
-  --list-sources           Find video sources loaded by a web page and exit
-  --auto-list-sources      Search after no video is found (default: on)
-  --source <n>             Select source number from that page (also for scripts)
-  --deep-scan              Check every media candidate found during source search
-  --timeout <duration>     Source search deadline, e.g. 30, 30s or 2m (5s-10m)
-  --dry-run                Show what would be downloaded and exit
-  --verify                 Probe saved media files with FFprobe (default: off)
-  --json                   Print one JSON object per URL instead of prose
-  --profile <name>         Apply a named config profile
-  --batch-file <file>      Read URLs from a file (one per line; # comments)
-  --retry-failed <id|file> Retry failed/unfinished items by run ID or job file
-  --playlist-items <list>  Select playlist entries, e.g. 1,3-5 (implies --playlist)
-  --skip-existing         Skip matching downloads still present on disk
-  --no-<boolean-option>   Disable a stored boolean default, e.g. --no-open
-  -v, --version            Show installed version (also: veo version)
-  -h, --help               Show help (also: veo help)
-
-Commands:
-  veo update|up [--check]   Update veo itself with npm (up is a short alias)
-  veo backend update       Install a newer yt-dlp release (see veo backend --help)
-  veo doctor               Diagnose the local setup
-  veo flush                Stop veo runs and clear temporary downloads and jobs
-  veo stats                Show persistent download statistics
-  veo history              Show the last 5 downloads (--json for scripting)
-  veo retry --last         Retry the newest failed or unfinished job
-  veo history --failed --limit 20  Filter and extend download history
-  veo changes [<version>]   List release notes; --since <version> for newer changes
-  veo runs [id]            List active runs; add --json for metadata and progress
-  veo inspect <file>        Read media metadata; --check-audio measures audio signal
-  veo subs <url>            List available manual and automatic subtitles
-  veo inspect run <id>     Inspect saved files from a finished run by its id
-  veo stop [id]            Stop one run, or every active run
-  veo alias list|add|remove  Manage extra command names (wrappers calling veo)
-  veo uninstall [-p <name>]  Remove one alias, or everything with --yes
-  veo version              Show the installed version
-  veo config edit|path|profiles|guide|check|show|reset  Manage defaults and named profiles
-  veo profile [list|reset|name]  Show, list or change the default profile
-  veo config edit [--external|--terminal]      Choose the configuration editor
-
-Run veo without arguments in a terminal for interactive setup.
-Agent workflow: see docs/AGENT_GUIDE.md in the repository or installed package.
-
-Defaults can be stored in the veo config file; veo doctor prints its location.
-
-Examples:
-  veo "https://youtube.com/watch?v=..."
-  veo <url> -q 1080p
-  veo <url> --audio
-  veo <url> -o ./downloads
-  veo <url> -r "My Video" --open
-  veo <url1> <url2> --subs --embed-metadata
-  veo update --check
-
-Only download content you are authorized or legally permitted to download.
-`;
+export { HELP, HELP_ALL } from './help.js';
 
 const STRING_OPTIONS = {
   quality: { short: 'q' },
@@ -300,7 +195,8 @@ export function parseCli(args, { config = {} } = {}) {
   try { parsed = parseArgs({ args, tokens: true, allowNegative: true, allowPositionals: true, strict: true, options: cliOptions(config) }); }
   catch (error) { throw explainUnknownOption(error, cliOptions(config)); }
   const { values, positionals, tokens } = parsed;
-  if (values.help || values.version) return values;
+  if (values.help) return { ...values, helpAll: positionals[0] === 'all' };
+  if (values.version) return values;
   // A stored default conflicting with a flag typed right now is a user error;
   // a stored default merely ignored by another flag is not.
   const typed = {
@@ -578,7 +474,7 @@ async function runMain(args, { config }) {
       if (!args) return 0;
     }
     let options = parseCli(args, { config: loaded.config });
-    if (options.help) { stdout.write(HELP); return 0; }
+    if (options.help) { stdout.write(options.helpAll ? HELP_ALL : HELP); return 0; }
     if (options.version) {
       const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
       stdout.write(`${pkg.version}\n`);
@@ -694,7 +590,7 @@ async function runMain(args, { config }) {
           stdout.write(`URL: ${url}\n`);
           stdout.write(`${describeEstimate(plan)}\n`);
           if (plan.quality) stdout.write(`${plan.quality}\n`);
-          for (const entry of plan.entries) stdout.write(`Would save: ${cleanText(entry.path)}\n`);
+          for (const entry of plan.entries) stdout.write(pathRows(stdout, 'Would save: ', entry.path).map((row, line) => `${line ? ' '.repeat(12) : 'Would save: '}${row}`).join('\n') + '\n');
         }
       }
       return 0;

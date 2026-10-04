@@ -6,6 +6,8 @@ import { readableError } from '../src/utils.js';
 import { runBackend } from '../src/downloader.js';
 import { EventEmitter } from 'node:events';
 
+// Widths are visible cells: color codes around the bar take no space on screen.
+const visible = text => text.replace(/\x1b\[[0-9;]*m/g, '');
 const data = { stream: 'Media', downloaded_bytes: 90 * 1024 ** 2, total_bytes_estimate: 1024 ** 3, speed: 12.6 * 1024 ** 2, eta: 77 };
 
 test('narrow progress keeps the bar and every statistic below it', () => {
@@ -64,7 +66,7 @@ test('size polling redraws without resize events and clears wrapped remnants bef
     output.columns = 30;
     await new Promise(resolve => setTimeout(resolve, 220));
     assert.ok(output.text.startsWith('\r\x1b[2K\x1b[J'));
-    for (const line of output.text.split('\r\x1b[2K').at(-1).replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < 30);
+    for (const line of visible(output.text.split('\r\x1b[2K').at(-1)).replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < 30);
     output.text = '';
     output.columns = 120;
     await new Promise(resolve => setTimeout(resolve, 220));
@@ -85,7 +87,7 @@ test('resize redraws live progress without backend updates and restores fitting 
   assert.ok(output.text.split('\r\x1b[2K').at(-1).includes(title));
   output.columns = 40;
   output.emit('resize');
-  const narrow = output.text.split('\r\x1b[2K').at(-1);
+  const narrow = visible(output.text.split('\r\x1b[2K').at(-1));
   for (const line of narrow.split('\r\n')) assert.ok(line.length < 40);
   assert.ok(narrow.includes('…'));
   output.columns = 120;
@@ -108,11 +110,12 @@ test('long URLs, titles and scoped status lines fit the terminal; pipe output st
     reporter.scoped(1, 2, long).status('Reading video: done');
     reporter.profile(long);
     const lines = output.text.trimEnd().split('\n');
-    assert.equal(lines.length, 9);
+    // Status notes wrap like titles (three rows at most) instead of losing their tail.
+    assert.equal(lines.length, 11);
     for (const line of lines) {
       assert.ok(line.length < columns, line);
     }
-    for (const index of [2, 5, 6, 7, 8]) assert.ok(lines[index].endsWith('…'), lines[index]);
+    for (const index of [2, 5, 8, 9, 10]) assert.ok(lines[index].endsWith('…'), lines[index]);
   }
   const pipe = { text: '', write(value) { this.text += value; } };
   createReporter(pipe, { setTitle() {} }).item(1, 1, long);
@@ -161,7 +164,7 @@ test('Termux progress stays within the terminal and reuses one line across resiz
     assert.equal(wrapped.columns, columns);
     for (let index = 0; index < 10; index++) reporter.progress({ ...data, downloaded_bytes: data.downloaded_bytes + index });
     const lastLine = output.text.split('\r\x1b[2K').at(-1);
-    for (const line of lastLine.replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < columns, `${columns}: ${line}`);
+    for (const line of visible(lastLine).replace(/\x1b\[\d+A|\r$/g, '').split('\r\n')) assert.ok(line.length < columns, `${columns}: ${line}`);
   }
   reporter.finish();
   assert.ok(output.text.endsWith('\r\x1b[2K'));
@@ -181,7 +184,7 @@ test('parallel progress shares a compact live line and handles wide titles', () 
   const first = reporter.scoped(1, 2, '🎥日本語'.repeat(20));
   const second = reporter.scoped(2, 2, 'Second');
   for (let index = 0; index < 20; index++) { first.progress(data); second.progress(data); }
-  for (const frame of output.text.split('\r\x1b[2K').filter(Boolean)) for (const line of frame.replace(/\x1b\[[0-9;]*[AJ]/g, '').split('\r\n')) assert.ok(line.length < 40);
+  for (const frame of output.text.split('\r\x1b[2K').filter(Boolean)) for (const line of visible(frame).replace(/\x1b\[[0-9;]*[AJ]/g, '').split('\r\n')) assert.ok(line.length < 40);
   assert.match(output.text, /\[1\/2\]/);
   assert.match(output.text, /\[2\/2\]/);
 });
