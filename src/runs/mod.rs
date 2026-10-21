@@ -1,8 +1,13 @@
+//! Active run registry: listing, inspecting and stopping runs.
+
+mod format;
+mod stop;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
@@ -13,14 +18,20 @@ use crate::paths;
 use crate::run_archive::run_archive_file;
 use crate::state;
 use crate::terminal::Std;
-use crate::utils::{clean_text, local_stamp};
+use crate::utils::clean_text;
+
+pub use format::*;
+pub use stop::*;
 
 /// Every veo run registers itself under the per-user cache's `runs` directory
 /// while it works, so another terminal can list, inspect or stop it.
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(15);
-const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-const SHOWN_ITEMS: usize = 10;
-const OUTPUT_WIDTH: usize = 42;
+
+pub(super) const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+pub(super) const SHOWN_ITEMS: usize = 10;
+
+pub(super) const OUTPUT_WIDTH: usize = 42;
 
 pub const RUNS_HELP: &str = "veo runs [id] [--json]
 
@@ -45,15 +56,15 @@ pub fn runs_directory(root: &Path) -> PathBuf {
     paths::resolve(root).join("runs")
 }
 
-fn exists(file: &Path) -> Result<bool> {
+pub(super) fn exists(file: &Path) -> Result<bool> {
     Ok(optional(fs::symlink_metadata(file))?.is_some())
 }
 
-fn text(value: Option<&Value>) -> String {
+pub(super) fn text(value: Option<&Value>) -> String {
     value.and_then(Value::as_str).map(clean_text).unwrap_or_default()
 }
 
-fn new_run_id() -> String {
+pub(super) fn new_run_id() -> String {
     (0..6).map(|_| ID_ALPHABET[state::random_below(ID_ALPHABET.len() as u32) as usize] as char).collect()
 }
 
@@ -98,7 +109,7 @@ pub struct Run {
 }
 
 impl Run {
-    fn field(&self, key: &str) -> Option<&Value> {
+    pub(super) fn field(&self, key: &str) -> Option<&Value> {
         self.record.get(key)
     }
 
@@ -106,16 +117,16 @@ impl Run {
         self.field("job").and_then(Value::as_str).filter(|job| !job.is_empty()).map(str::to_string)
     }
 
-    fn started_at(&self) -> Option<String> {
+    pub(super) fn started_at(&self) -> Option<String> {
         self.field("startedAt").and_then(Value::as_str).map(str::to_string)
     }
 
-    fn label(&self) -> String {
+    pub(super) fn label(&self) -> String {
         self.id.clone().unwrap_or_else(|| format!("PID {}", self.pid))
     }
 }
 
-fn run_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub(super) fn run_files(root: &Path) -> Result<Vec<PathBuf>> {
     let directory = runs_directory(root);
     let Some(info) = optional(fs::symlink_metadata(&directory))? else { return Ok(Vec::new()) };
     if !info.is_dir() || info.file_type().is_symlink() {
@@ -134,7 +145,7 @@ fn run_files(root: &Path) -> Result<Vec<PathBuf>> {
 
 /// Damaged or foreign files are ignored, never fatal: a single stray file must
 /// not block every later veo run.
-fn read_records(root: &Path) -> Result<Vec<Run>> {
+pub(super) fn read_records(root: &Path) -> Result<Vec<Run>> {
     let mut records = Vec::new();
     for file in run_files(root)? {
         let Some(Value::Object(record)) = state::read_json_lenient::<Value>(&file) else { continue };
@@ -162,8 +173,8 @@ pub fn list_runs(root: &Path) -> Result<Vec<Run>> {
 pub struct Registration {
     pub id: String,
     pub file: PathBuf,
-    record: Mutex<Map<String, Value>>,
-    stopped: Arc<AtomicBool>,
+    pub(super) record: Mutex<Map<String, Value>>,
+    pub(super) stopped: Arc<AtomicBool>,
 }
 
 pub struct RunDetails<'a> {
@@ -261,7 +272,7 @@ pub fn register_run(cancel: Cancel, root: &Path) -> Result<Registration> {
 }
 
 /// Per-item progress of a run, read from the job file it writes as it works.
-fn read_progress(job: Option<&str>) -> Option<Value> {
+pub(super) fn read_progress(job: Option<&str>) -> Option<Value> {
     let job: Value = state::read_json_lenient(Path::new(job?))?;
     if job.get("version").and_then(Value::as_i64) != Some(1) {
         return None;
@@ -287,7 +298,7 @@ fn read_progress(job: Option<&str>) -> Option<Value> {
     Some(json!({ "items": items, "counts": counts }))
 }
 
-fn describe_runs(root: &Path) -> Result<Vec<Run>> {
+pub(super) fn describe_runs(root: &Path) -> Result<Vec<Run>> {
     let mut runs = list_runs(root)?;
     for run in &mut runs {
         run.progress = read_progress(run.job().as_deref());
@@ -295,175 +306,12 @@ fn describe_runs(root: &Path) -> Result<Vec<Run>> {
     Ok(runs)
 }
 
-pub fn summarize_progress(progress: Option<&Value>) -> String {
-    let count = |key: &str| progress.and_then(|progress| progress.pointer(&format!("/counts/{key}"))).and_then(Value::as_u64).unwrap_or(0);
-    let total = count("total");
-    if total == 0 {
-        return "starting".into();
-    }
-    let mut parts = Vec::new();
-    let done = count("saved") + count("skipped");
-    if done > 0 {
-        parts.push(format!("{done}/{total} done"));
-    }
-    for (key, label) in [("running", "running"), ("failed", "failed"), ("cancelled", "cancelled")] {
-        if count(key) > 0 {
-            parts.push(format!("{} {label}", count(key)));
-        }
-    }
-    if count("pending") > 0 {
-        parts.push(if parts.is_empty() { format!("{total} pending") } else { format!("{} pending", count("pending")) });
-    }
-    parts.join(", ")
-}
-
-fn short_duration(ms: i64) -> String {
-    if ms < 0 {
-        return "0s".into();
-    }
-    let seconds = ms / 1000;
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m {}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h {}m", seconds / 3600, seconds % 3600 / 60)
-    }
-}
-
-fn shorten(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    if chars.len() <= OUTPUT_WIDTH {
-        value.to_string()
-    } else {
-        format!("…{}", chars[chars.len() - (OUTPUT_WIDTH - 1)..].iter().collect::<String>())
-    }
-}
-
-// Records of older versions have no start time, so no uptime can be shown.
-fn uptime(run: &Run) -> Option<String> {
-    let started = chrono::DateTime::parse_from_rfc3339(&run.started_at()?).ok()?;
-    Some(short_duration(state::now_ms() - started.timestamp_millis()))
-}
-
-fn describe_media(run: &Run) -> String {
-    let media = text(run.field("media"));
-    let detail = text(run.field(if media == "audio" { "format" } else { "quality" }));
-    format!(
-        "{}{}{}",
-        if media.is_empty() { "not resolved yet".to_string() } else { media },
-        if detail.is_empty() { String::new() } else { format!(", {detail}") },
-        if run.field("playlist") == Some(&Value::Bool(true)) { ", playlist" } else { "" }
-    )
-}
-
-pub fn format_runs(runs: &[Run]) -> String {
-    if runs.is_empty() {
-        return "veo runs\n\nNo veo runs are active. Start a download to see it here.\n".into();
-    }
-    let rows: Vec<[String; 6]> = runs
-        .iter()
-        .map(|run| {
-            let state = if run.alive { format!("running{}", uptime(run).map(|value| format!(" {value}")).unwrap_or_default()) } else { "stale".into() };
-            let output = text(run.field("output"));
-            [
-                run.id.clone().unwrap_or_else(|| "-".into()),
-                run.pid.to_string(),
-                state,
-                local_stamp(&run.started_at().unwrap_or_default()),
-                summarize_progress(run.progress.as_ref()),
-                if output.is_empty() { "-".into() } else { shorten(&output) },
-            ]
-        })
-        .collect();
-    let header = ["ID", "PID", "STATE", "STARTED", "ITEMS", "OUTPUT"].map(str::to_string);
-    let widths: Vec<usize> = (0..6).map(|index| rows.iter().map(|row| row[index].chars().count()).chain([header[index].len()]).max().unwrap_or(0)).collect();
-    let line = |cells: &[String; 6]| {
-        cells.iter().enumerate().map(|(index, cell)| format!("{cell:<width$}", width = widths[index])).collect::<Vec<_>>().join("  ").trim_end().to_string()
-    };
-    let mut lines = vec!["veo runs".to_string(), String::new(), line(&header)];
-    lines.extend(rows.iter().map(line));
-    lines.push(String::new());
-    lines.push("Details: veo runs <id>    Stop: veo stop [id]".into());
-    format!("{}\n", lines.join("\n"))
-}
-
-pub fn format_run_details(run: &Run) -> String {
-    let mut lines = vec![format!("veo runs {}", run.id.as_deref().unwrap_or("-")), String::new()];
-    let running = uptime(run);
-    lines.push(format!("State:   {}", if run.alive { format!("running (PID {})", run.pid) } else { format!("stale (PID {} is gone)", run.pid) }));
-    lines.push(format!(
-        "Started: {}{}",
-        local_stamp(&run.started_at().unwrap_or_default()),
-        match (&running, run.alive) {
-            (Some(value), true) => format!(" ({value} ago)"),
-            _ => String::new(),
-        }
-    ));
-    lines.push(format!("Media:   {}", describe_media(run)));
-    let or = |value: String, fallback: &str| if value.is_empty() { fallback.to_string() } else { value };
-    lines.push(format!("Profile: {}", or(text(run.field("profile")), "global (no profile)")));
-    lines.push(format!("Output:  {}", or(text(run.field("output")), "not resolved yet")));
-    lines.push(format!("Job:     {}", or(text(run.field("job")), "not created yet")));
-    let urls: Vec<String> = run
-        .field("urls")
-        .and_then(Value::as_array)
-        .map(|urls| urls.iter().map(|url| text(Some(url))).filter(|url| !url.is_empty()).collect())
-        .unwrap_or_default();
-    lines.push(format!("URLs:    {}", if urls.is_empty() { "not resolved yet".into() } else { urls.len().to_string() }));
-    for (index, url) in urls.iter().take(SHOWN_ITEMS).enumerate() {
-        lines.push(format!("  {}. {url}", index + 1));
-    }
-    if urls.len() > SHOWN_ITEMS {
-        lines.push(format!("  … and {} more", urls.len() - SHOWN_ITEMS));
-    }
-    let items = run.progress.as_ref().and_then(|progress| progress["items"].as_array()).cloned().unwrap_or_default();
-    if !items.is_empty() {
-        lines.push(format!("Items:   {}", summarize_progress(run.progress.as_ref())));
-        for (index, item) in items.iter().take(SHOWN_ITEMS).enumerate() {
-            let status = item["status"].as_str().unwrap_or("pending");
-            let files = item["files"].as_array().cloned().unwrap_or_default();
-            let detail = if status == "saved" {
-                match files.first().and_then(Value::as_str) {
-                    Some(first) => format!("  {first}{}", if files.len() > 1 { format!(" (+{} file(s))", files.len() - 1) } else { String::new() }),
-                    None => String::new(),
-                }
-            } else {
-                format!("  {}", item["url"].as_str().unwrap_or(""))
-            };
-            lines.push(format!("  {:>2}. {status}{detail}", index + 1));
-            if let Some(error) = item["error"].as_str() {
-                lines.push(format!("      {error}"));
-            }
-        }
-        if items.len() > SHOWN_ITEMS {
-            lines.push(format!("  … and {} more item(s)", items.len() - SHOWN_ITEMS));
-        }
-    }
-    lines.push(String::new());
-    lines.push(match (&run.id, run.alive) {
-        (Some(id), true) => format!("Stop:    veo stop {id}"),
-        _ => "Cleanup: veo stop  (removes stale records)".into(),
-    });
-    format!("{}\n", lines.join("\n"))
-}
-
-fn normalize_id(value: &str) -> Result<String> {
+pub(super) fn normalize_id(value: &str) -> Result<String> {
     let id = clean_text(value).to_lowercase();
     if !re!(r"^[0-9a-z]{6}$").is_match(&id) {
         return Err(Error::msg(format!("Invalid run id \"{}\". Run ids have 6 characters and are listed by veo runs.", clean_text(value))));
     }
     Ok(id)
-}
-
-fn public_run(run: &Run) -> Value {
-    let get = |key: &str| run.field(key).filter(|value| !value.is_null() && value.as_str() != Some("")).cloned().unwrap_or(Value::Null);
-    json!({
-        "id": run.id, "pid": run.pid, "state": if run.alive { "running" } else { "stale" }, "startedAt": get("startedAt"),
-        "urls": run.field("urls").filter(|urls| urls.is_array()).cloned().unwrap_or(json!([])),
-        "output": get("output"), "media": get("media"), "quality": get("quality"), "format": get("format"), "profile": get("profile"),
-        "playlist": run.field("playlist") == Some(&Value::Bool(true)), "job": get("job"), "progress": run.progress.clone().unwrap_or(Value::Null),
-    })
 }
 
 pub fn runs_main(args: &[String], root: &Path) -> Result<i32> {
@@ -498,74 +346,6 @@ pub fn runs_main(args: &[String], root: &Path) -> Result<i32> {
         stdout.write(&format_run_details(run));
     }
     Ok(0)
-}
-
-/// A run answers a stop request by removing its own record, so a run counts
-/// as gone as soon as its record disappears.
-pub fn wait_for_exit(runs: &[Run], timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let pending = runs.iter().any(|run| alive(run.pid) && fs::symlink_metadata(&run.file).is_ok());
-        if !pending {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-pub fn stop_main(args: &[String], root: &Path, timeout: Duration) -> Result<i32> {
-    let stdout = Out::command(Std::Out, args);
-    let args = crate::output::strip_color_flags(args);
-    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        stdout.write(STOP_HELP);
-        return Ok(0);
-    }
-    if args.len() > 1 {
-        return Err(Error::msg("Usage: veo stop [id]"));
-    }
-    let mut targets = list_runs(root)?;
-    if let Some(requested) = args.first() {
-        let id = normalize_id(requested)?;
-        targets.retain(|run| run.id.as_deref() == Some(id.as_str()));
-        if targets.is_empty() {
-            return Err(Error::msg(format!("No veo run with id {id} is active. List runs with veo runs.")));
-        }
-    }
-    let (live, stale): (Vec<Run>, Vec<Run>) = targets.into_iter().partition(|run| run.alive);
-    for run in &live {
-        fs::write(format!("{}.cancel", run.file.display()), "stop")?;
-    }
-    if !live.is_empty() {
-        wait_for_exit(&live, timeout);
-    }
-    let (remaining, stopped): (Vec<Run>, Vec<Run>) = live.into_iter().partition(|run| fs::symlink_metadata(&run.file).is_ok() && alive(run.pid));
-    for run in stale.iter().chain(stopped.iter()) {
-        let _ = fs::remove_file(&run.file);
-        let _ = fs::remove_file(format!("{}.cancel", run.file.display()));
-    }
-    let labels = |runs: &[Run]| runs.iter().map(Run::label).collect::<Vec<_>>().join(", ");
-    let mut lines = vec!["veo stop".to_string(), String::new()];
-    if !stopped.is_empty() {
-        lines.push(format!("Stopped: {}", labels(&stopped)));
-    }
-    if !stale.is_empty() {
-        lines.push(format!("Removed {} stale record(s): {}", stale.len(), labels(&stale)));
-    }
-    if !remaining.is_empty() {
-        lines.push(format!("Still running: {}", labels(&remaining)));
-    }
-    if stopped.is_empty() && stale.is_empty() && remaining.is_empty() {
-        lines.push("No veo runs were active.".into());
-    }
-    if !stopped.is_empty() {
-        lines.push(String::new());
-        lines.push("Partial data and retry jobs are kept; veo flush removes them.".into());
-    }
-    stdout.line(lines.join("\n"));
-    Ok(if remaining.is_empty() { 0 } else { 1 })
 }
 
 #[cfg(test)]

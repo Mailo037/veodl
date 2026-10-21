@@ -968,14 +968,15 @@ test on Windows, macOS and Linux, and verifies the npm package. Pushing a tag `v
 static Linux x64/ARM64 (musl) and Android ARM64, attaches them to a GitHub release and
 publishes the npm packages (`NPM_TOKEN` secret).
 
-Modules mirror the commands: argument parsing and dispatch (`src/cli.rs`), configuration
-(`src/config*.rs`), backend setup and updates (`src/backend.rs`, `src/tool_setup.rs`,
-`src/backend_update.rs`), download orchestration (`src/downloader.rs`,
-`src/download_cache.rs`, `src/jobs.rs`, `src/playlist.rs`), records (`src/runs.rs`,
-`src/history.rs`, `src/stats.rs`, `src/run_archive.rs`, `src/flush.rs`), diagnostics
-(`src/doctor.rs`, `src/inspect_media.rs`), source discovery over the Chrome DevTools
-Protocol (`src/source_discovery.rs`), terminal output (`src/output.rs`,
-`src/progress.rs`, `src/terminal.rs`) and helpers.
+Modules mirror the commands and stay small (larger ones are directories of focused
+submodules): argument parsing and dispatch (`src/cli/`), configuration (`src/config*.rs`,
+`src/config_editor/`), backend setup and updates (`src/backend/`, `src/tool_setup.rs`,
+`src/backend_update.rs`), downloads (`src/downloader/`, `src/download_cache.rs`,
+`src/jobs/`, `src/playlist.rs`), records (`src/runs/`, `src/history.rs`, `src/stats.rs`,
+`src/run_archive.rs`, `src/flush.rs`), diagnostics (`src/doctor.rs`,
+`src/inspect_media.rs`), source discovery over the Chrome DevTools Protocol
+(`src/source_discovery/`), terminal output (`src/output.rs`, `src/progress/`,
+`src/terminal.rs`) and helpers.
 
 ## License
 

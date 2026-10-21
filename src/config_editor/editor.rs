@@ -1,264 +1,49 @@
+//! Screen rendering and key handling of the full-screen config editor.
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use crossterm::terminal;
 
 use crate::clipboard;
-use crate::config::parse_config_text;
-use crate::config_diagnostics::{editor_completions, semantic_issue};
-use crate::config_template::{add_config_guide, config_guide_state, remove_config_guide};
+use crate::config_diagnostics::editor_completions;
+use crate::config_template::{add_config_guide, remove_config_guide};
 use crate::error::{Error, Result};
 use crate::path_links::folder_link;
 
-fn safe(text: &str) -> String {
-    text.chars().map(|c| if matches!(c, '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}') { ' ' } else { c }).collect()
-}
+use super::*;
 
-/// A located problem for display (offsets in characters).
-#[derive(Clone, Debug)]
-pub struct EditorIssue {
-    pub message: String,
-    pub line: Option<usize>,
-    pub column: Option<usize>,
-    pub start: Option<usize>,
-    pub end: Option<usize>,
-}
-
-fn char_offset(text: &str, byte: usize) -> usize {
-    text.get(..byte.min(text.len())).map_or(text.chars().count(), |prefix| prefix.chars().count())
-}
-
-pub fn validate_editor_text(text: &str) -> Option<EditorIssue> {
-    match semantic_issue(text) {
-        Ok(None) => None,
-        Ok(Some(issue)) => Some(EditorIssue {
-            message: issue.message,
-            line: issue.line,
-            column: issue.column,
-            start: issue.start.map(|byte| char_offset(text, byte)),
-            end: issue.end.map(|byte| char_offset(text, byte)),
-        }),
-        Err(_) => {
-            let error = parse_config_text(text, "config").err().unwrap_or_else(|| Error::msg("Invalid JSON syntax."));
-            let location = re!(r"line ([0-9]+), column ([0-9]+)")
-                .captures(&error.message)
-                .map(|captures| (captures[1].parse().unwrap_or(1), captures[2].parse().unwrap_or(1)));
-            let message = re!(r"^The veo config file is not valid JSON: .*?\(line [0-9]+, column [0-9]+\)\. ").replace(&error.message, "").into_owned();
-            Some(EditorIssue { message, line: location.map(|(line, _)| line), column: location.map(|(_, column)| column), start: None, end: None })
-        }
-    }
-}
-
-/// A small text buffer with a cursor and an optional selection anchor.
-#[derive(Clone, Debug)]
-pub struct EditorBuffer {
-    pub text: Vec<char>,
-    pub cursor: usize,
-    pub anchor: Option<usize>,
-}
-
-impl EditorBuffer {
-    pub fn new(text: &str) -> Self {
-        EditorBuffer { text: text.chars().collect(), cursor: 0, anchor: None }
-    }
-
-    pub fn string(&self) -> String {
-        self.text.iter().collect()
-    }
-
-    pub fn selection(&self) -> (usize, usize) {
-        match self.anchor {
-            None => (self.cursor, self.cursor),
-            Some(anchor) => (anchor.min(self.cursor), anchor.max(self.cursor)),
-        }
-    }
-
-    pub fn delete_selection(&mut self) -> bool {
-        let (start, end) = self.selection();
-        self.anchor = None;
-        if start == end {
-            return false;
-        }
-        self.text.drain(start..end);
-        self.cursor = start;
-        true
-    }
-
-    fn lines(&self) -> Vec<usize> {
-        // Length of every line in characters.
-        let mut lengths = vec![0];
-        for c in &self.text {
-            if *c == '\n' {
-                lengths.push(0);
-            } else {
-                *lengths.last_mut().unwrap() += 1;
-            }
-        }
-        lengths
-    }
-
-    pub fn point(&mut self, row: isize, col: isize, extend: bool) {
-        if extend && self.anchor.is_none() {
-            self.anchor = Some(self.cursor);
-        }
-        if !extend {
-            self.anchor = None;
-        }
-        let lines = self.lines();
-        let row = row.clamp(0, lines.len() as isize - 1) as usize;
-        self.cursor = lines[..row].iter().map(|length| length + 1).sum::<usize>() + (col.max(0) as usize).min(lines[row]);
-    }
-
-    pub fn insert(&mut self, text: &str) {
-        self.delete_selection();
-        let chars: Vec<char> = text.chars().collect();
-        let count = chars.len();
-        self.text.splice(self.cursor..self.cursor, chars);
-        self.cursor += count;
-    }
-
-    pub fn position(&self) -> (usize, usize) {
-        let before = &self.text[..self.cursor];
-        let row = before.iter().filter(|c| **c == '\n').count();
-        let col = self.cursor - before.iter().rposition(|c| *c == '\n').map_or(0, |index| index + 1);
-        (row, col)
-    }
-
-    pub fn move_rows(&mut self, rows: isize) {
-        let lines = self.lines();
-        let (row, col) = self.position();
-        let next = (row as isize + rows).clamp(0, lines.len() as isize - 1) as usize;
-        self.cursor = lines[..next].iter().map(|length| length + 1).sum::<usize>() + col.min(lines[next]);
-    }
-
-    pub fn key(&mut self, name: &str) {
-        if (name == "backspace" || name == "delete") && self.delete_selection() {
-            return;
-        }
-        if ["left", "right", "up", "down", "home", "end"].contains(&name) {
-            self.anchor = None;
-        }
-        match name {
-            "left" => self.cursor = self.cursor.saturating_sub(1),
-            "right" => self.cursor = (self.cursor + 1).min(self.text.len()),
-            "up" => self.move_rows(-1),
-            "down" => self.move_rows(1),
-            "home" => self.cursor -= self.position().1,
-            "end" => self.cursor = self.text[self.cursor..].iter().position(|c| *c == '\n').map_or(self.text.len(), |offset| self.cursor + offset),
-            "backspace" if self.cursor > 0 => {
-                self.text.remove(self.cursor - 1);
-                self.cursor -= 1;
-            }
-            "delete" if self.cursor < self.text.len() => {
-                self.text.remove(self.cursor);
-            }
-            "return" => self.insert("\n"),
-            "tab" => self.insert("  "),
-            _ => {}
-        }
-    }
-}
-
-#[derive(Clone)]
-struct Snapshot {
-    text: Vec<char>,
-    cursor: usize,
-    anchor: Option<usize>,
-}
-
-struct History {
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
-    group: Option<(String, Instant)>,
-}
-
-impl History {
-    fn snapshot(buffer: &EditorBuffer) -> Snapshot {
-        Snapshot { text: buffer.text.clone(), cursor: buffer.cursor, anchor: buffer.anchor }
-    }
-
-    fn record(&mut self, buffer: &EditorBuffer, before: Snapshot, kind: &str, groupable: bool) {
-        if before.text == buffer.text {
-            return;
-        }
-        let grouped = groupable && self.group.as_ref().is_some_and(|(previous, at)| previous == kind && at.elapsed() <= Duration::from_millis(600));
-        if !grouped {
-            self.undo.push(before);
-            if self.undo.len() > 100 {
-                self.undo.remove(0);
-            }
-        }
-        self.redo.clear();
-        self.group = groupable.then(|| (kind.to_string(), Instant::now()));
-    }
-
-    fn change(&mut self, buffer: &mut EditorBuffer, undo: bool) -> bool {
-        let (from, to) = if undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
-        let Some(state) = from.pop() else { return false };
-        to.push(History::snapshot(buffer));
-        buffer.text = state.text;
-        buffer.cursor = state.cursor;
-        buffer.anchor = state.anchor;
-        self.group = None;
-        true
-    }
-}
-
-pub fn color_line(line: &str, enabled: bool) -> String {
-    let clean = safe(line);
-    if !enabled {
-        return clean;
-    }
-    re!(r#"("(?:\\.|[^"\\])*"\s*:?)|(//.*$)|\b(true|false|null|-?[0-9]+(?:\.[0-9]+)?)\b"#)
-        .replace_all(&clean, |captures: &regex::Captures| {
-            let token = &captures[0];
-            let code = if captures.get(2).is_some() {
-                90
-            } else if captures.get(1).is_some() {
-                if token.ends_with(':') {
-                    36
-                } else {
-                    32
-                }
-            } else {
-                33
-            };
-            format!("\x1b[{code}m{token}\x1b[0m")
-        })
-        .into_owned()
-}
-
-struct Editor<'a> {
-    file: &'a Path,
-    color: bool,
-    newline: &'static str,
-    buffer: EditorBuffer,
-    history: History,
-    saved: Vec<char>,
-    disk: String,
-    issue: Option<EditorIssue>,
-    top: usize,
-    left: usize,
-    follow: bool,
-    question: bool,
-    guide_prompt: bool,
-    status: String,
-    completion: Option<(usize, usize, Vec<serde_json::Value>, usize)>,
-    pending: Option<Instant>,
-    viewport: (usize, usize, usize),
-    dragging: bool,
+pub(super) struct Editor<'a> {
+    pub(super) file: &'a Path,
+    pub(super) color: bool,
+    pub(super) newline: &'static str,
+    pub(super) buffer: EditorBuffer,
+    pub(super) history: History,
+    pub(super) saved: Vec<char>,
+    pub(super) disk: String,
+    pub(super) issue: Option<EditorIssue>,
+    pub(super) top: usize,
+    pub(super) left: usize,
+    pub(super) follow: bool,
+    pub(super) question: bool,
+    pub(super) guide_prompt: bool,
+    pub(super) status: String,
+    pub(super) completion: Option<(usize, usize, Vec<serde_json::Value>, usize)>,
+    pub(super) pending: Option<Instant>,
+    pub(super) viewport: (usize, usize, usize),
+    pub(super) dragging: bool,
 }
 
 impl Editor<'_> {
-    fn validate(&mut self) {
+    pub(super) fn validate(&mut self) {
         self.issue = validate_editor_text(&self.buffer.string());
         self.pending = None;
     }
 
-    fn render(&mut self) {
+    pub(super) fn render(&mut self) {
         let (columns, rows) = terminal::size().map(|(c, r)| (c as usize, r as usize)).unwrap_or((80, 24));
         let width = columns.saturating_sub(1).max(1);
         let diagnosis = self
@@ -398,7 +183,7 @@ impl Editor<'_> {
         let _ = out.flush();
     }
 
-    fn edited(&mut self, before: Snapshot, kind: &str, groupable: bool) {
+    pub(super) fn edited(&mut self, before: Snapshot, kind: &str, groupable: bool) {
         if before.text != self.buffer.text {
             let buffer = self.buffer.clone();
             self.history.record(&buffer, before, kind, groupable);
@@ -410,7 +195,7 @@ impl Editor<'_> {
         }
     }
 
-    fn save(&mut self) {
+    pub(super) fn save(&mut self) {
         self.history.group = None;
         self.follow = true;
         self.buffer.anchor = None;
@@ -440,7 +225,7 @@ impl Editor<'_> {
     }
 
     /// Returns true when the editor should close.
-    fn key(&mut self, key: KeyEvent) -> bool {
+    pub(super) fn key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let text = match key.code {
             KeyCode::Char(c) if !ctrl && !key.modifiers.contains(KeyModifiers::ALT) => Some(c.to_string()),
@@ -626,7 +411,7 @@ impl Editor<'_> {
         false
     }
 
-    fn paste(&mut self, pasted: &str) {
+    pub(super) fn paste(&mut self, pasted: &str) {
         let normalized = re!(r"\r\n?").replace_all(pasted, "\n");
         let cleaned: String = normalized.chars().filter(|c| !matches!(c, '\u{00}'..='\u{08}' | '\u{0b}'..='\u{1f}' | '\u{7f}'..='\u{9f}')).collect();
         if cleaned.is_empty() {
@@ -642,7 +427,7 @@ impl Editor<'_> {
         self.validate();
     }
 
-    fn request_exit(&mut self) -> bool {
+    pub(super) fn request_exit(&mut self) -> bool {
         if self.buffer.text == self.saved {
             return true;
         }
@@ -650,7 +435,7 @@ impl Editor<'_> {
         false
     }
 
-    fn mouse(&mut self, kind: MouseEventKind, x: usize, y: usize) {
+    pub(super) fn mouse(&mut self, kind: MouseEventKind, x: usize, y: usize) {
         if self.question {
             return;
         }
@@ -684,107 +469,5 @@ impl Editor<'_> {
             MouseEventKind::Up(_) => self.dragging = false,
             _ => {}
         }
-    }
-}
-
-/// The interactive full-screen config editor (alternate screen, raw mode).
-pub fn edit_config(file: &Path, color: bool) -> Result<()> {
-    if !crate::terminal::stdin_is_tty() || !crate::terminal::Std::Out.is_tty() {
-        return Err(Error::msg("The config editor requires an interactive terminal. Set EDITOR to use an external editor."));
-    }
-    let original = String::from_utf8_lossy(&fs::read(file)?).into_owned();
-    let newline = if original.contains("\r\n") { "\r\n" } else { "\n" };
-    let text = original.replace("\r\n", "\n");
-    let state = config_guide_state(&text);
-    let mut editor = Editor {
-        file,
-        color,
-        newline,
-        buffer: EditorBuffer::new(&text),
-        history: History { undo: Vec::new(), redo: Vec::new(), group: None },
-        saved: text.chars().collect(),
-        disk: original,
-        issue: None,
-        top: 0,
-        left: 0,
-        follow: true,
-        question: false,
-        guide_prompt: false,
-        status: match state {
-            "outdated" => "Updated config guide available. Press F3 to choose.".into(),
-            "current" => "Generated guide in file. Press F3 to remove it if duplicated.".into(),
-            _ => String::new(),
-        },
-        completion: None,
-        pending: None,
-        viewport: (1, 0, 80),
-        dragging: false,
-    };
-    editor.validate();
-    terminal::enable_raw_mode()?;
-    let mut out = std::io::stdout();
-    let _ = out.write_all(b"\x1b[?1049h");
-    let _ = crossterm::execute!(out, crossterm::event::EnableMouseCapture, crossterm::event::EnableBracketedPaste);
-    let result = (|| -> Result<()> {
-        editor.render();
-        loop {
-            let wait = match editor.pending {
-                Some(at) => Duration::from_millis(150).saturating_sub(at.elapsed()),
-                None => Duration::from_millis(500),
-            };
-            if !event::poll(wait)? {
-                if editor.pending.is_some_and(|at| at.elapsed() >= Duration::from_millis(150)) {
-                    editor.validate();
-                    editor.render();
-                }
-                continue;
-            }
-            match event::read()? {
-                Event::Key(key) if key.kind != KeyEventKind::Release => {
-                    if editor.key(key) {
-                        return Ok(());
-                    }
-                }
-                Event::Mouse(mouse) => editor.mouse(mouse.kind, mouse.column as usize + 1, mouse.row as usize + 1),
-                Event::Paste(text) => editor.paste(&text),
-                Event::Resize(_, _) => {}
-                _ => continue,
-            }
-            editor.render();
-        }
-    })();
-    let _ = crossterm::execute!(out, crossterm::event::DisableMouseCapture, crossterm::event::DisableBracketedPaste);
-    let _ = out.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
-    let _ = out.flush();
-    let _ = terminal::disable_raw_mode();
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn buffer_edits_lines_and_selections() {
-        let mut buffer = EditorBuffer::new("ab\ncd");
-        buffer.point(1, 1, false);
-        assert_eq!(buffer.position(), (1, 1));
-        buffer.key("up");
-        assert_eq!(buffer.cursor, 1);
-        buffer.key("end");
-        buffer.insert("!");
-        assert_eq!(buffer.string(), "ab!\ncd");
-        buffer.point(0, 0, false);
-        buffer.point(1, 2, true);
-        buffer.key("backspace");
-        assert_eq!(buffer.string(), "");
-    }
-
-    #[test]
-    fn validates_editor_text() {
-        assert!(validate_editor_text("{\"quality\": \"720p\"}").is_none());
-        let issue = validate_editor_text("{\n  \"quality\": 7,\n}").unwrap();
-        assert_eq!(issue.line, Some(3));
-        assert!(color_line("\"a\": true // x", true).contains("\x1b[36m"));
     }
 }
