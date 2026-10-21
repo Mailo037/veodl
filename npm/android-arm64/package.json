@@ -1,0 +1,21 @@
+{
+  "name": "veodl-android-arm64",
+  "version": "2.0.0",
+  "description": "The veo binary for android arm64 (aarch64-linux-android). Install veodl instead.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mailo037/veodl.git"
+  },
+  "homepage": "https://github.com/Mailo037/veodl#readme",
+  "os": [
+    "android"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "preferUnplugged": true
+}

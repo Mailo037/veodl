@@ -8,9 +8,12 @@ Automating with an agent? Start with the [agent guide](docs/AGENT_GUIDE.md) for 
 
 ## Install and run
 
-Requires **Node.js 22+** and npm. Internet access is needed for installation and first-use backend setup.
+veo is a single native executable (written in Rust) for Windows, macOS, Linux and
+Android/Termux. Internet access is needed for installation and first-use backend setup.
 
-The npm package is `veodl`; the installed commands are `veo` and `veodl`.
+The npm package is `veodl`; the installed commands are `veo` and `veodl`. npm installs the
+prebuilt binary for your platform from a matching `veodl-<platform>-<arch>` package; no
+install scripts run. Node.js is only needed for npm itself, not to run downloads.
 
 ```bash
 npx veodl "https://example.com/video.mp4"
@@ -30,16 +33,22 @@ JavaScript support with `pkg install -y`. On desktop systems, missing media tool
 are downloaded into veo's own cache. Run `veo doctor fix` to prepare everything
 before downloading. Plain `veo doctor`, help and version do not install tools.
 
-From this checkout, without publishing:
+Without npm, download the binary for your platform from the GitHub releases page, or
+build it with Rust 1.85+:
 
 ```bash
-npm install
-node bin/veo.js --help    # veo help all lists every option
-npm link
-veo "https://example.com/video.mp4"
+cargo install --git https://github.com/Mailo037/veodl
 ```
 
-`package.json` maps `"veo": "./bin/veo.js"`; npm creates the executable/shim automatically. No custom command prefix is needed. Use only trusted URLs, and quote URLs to protect query strings from your shell.
+From this checkout:
+
+```bash
+cargo build --release     # target/release/veo
+cargo test                # unit and offline end-to-end tests
+cargo test --test smoke -- --ignored   # real downloads with yt-dlp and FFmpeg
+```
+
+Use only trusted URLs, and quote URLs to protect query strings from your shell.
 
 If something does not work, run `veo doctor` first: it inspects the whole local setup and prints one line per check.
 
@@ -283,7 +292,7 @@ example through `veo config edit`. Enable it with `veo URL --profile kompatibel`
   `"profiles": { "default": { "color": true }, "plain": { "color": false } }`.
   Use `veo stats --profile plain` or `veo URL --profile plain`; `--color` or
   `--no-color` overrides the profile for one invocation (except `NO_COLOR`).
-  External npm/editor output and Node runtime warnings keep their own formatting.
+  External npm and editor output keeps its own formatting.
 
 ### Filename templates and folders
 
@@ -809,7 +818,8 @@ because a single stray file in the cache must never stop later runs.
 
 ### `veo doctor`
 
-Prints one line per check: `ok`, `warn` or `fail`. It inspects Node.js, the platform, the
+Prints one line per check: `ok`, `warn` or `fail`. It inspects the JavaScript runtime used by
+yt-dlp, the platform, the
 output directory, the backend cache, yt-dlp (including the SHA-256 of the cached binary and
 the version it reports), FFmpeg/FFprobe, a system FFmpeg fallback, the config file, leftover
 partial downloads, stale duplicate-detection records, the npm registry and the yt-dlp release host. It downloads no backend and
@@ -818,8 +828,8 @@ at least one check fails.
 
 Run `veo doctor fix` to restore missing or damaged managed tools and check again.
 It stages bundled FFmpeg/FFprobe and downloads verified yt-dlp when needed. Missing
-desktop media tools are installed in veo's cache using npm and the pinned media
-packages. On Termux it installs missing native tools with the package manager.
+desktop media tools are downloaded into veo's cache from the pinned media releases and
+verified before use. On Termux it installs missing native tools with the package manager.
 With `--offline`, it only uses local binaries; missing tools are reported for an online retry.
 Use `-o PATH` to create and check an output directory. Config errors and invalid overrides
 are reported for manual correction; PATH and config values are never rewritten.
@@ -829,13 +839,13 @@ A missing system FFmpeg is not a warning when the selected media tools work.
 
 YouTube, X/Twitter, TikTok, Vimeo, Reddit, Instagram, and [many other yt-dlp sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) are supported **when publicly accessible and technically available**. Support changes with websites, regions, rate limits, and backend versions; it is not a guarantee that every URL will work.
 
-Official standalone yt-dlp is acquired on first download and cached outside the package directory; help, version and plain doctor never download the backend. The release is pinned and SHA-256 verified against hashes shipped with this package. The npm package has no runtime dependencies and runs no installation scripts.
+Official standalone yt-dlp is acquired on first download and cached outside the package directory; help, version and plain doctor never download the backend. The release is pinned and SHA-256 verified against hashes shipped with this package. The npm package runs no installation scripts; its only dependencies are the optional per-platform packages that carry the veo binary.
 
 When no trusted local FFmpeg/FFprobe pair is available, veo downloads both tools directly from the upstream [ffmpeg-static binary releases](https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1). Release URLs, compressed and executable SHA-256 hashes, and byte counts are pinned in the package. The complete pair and its license and README must pass verification before either executable is started. Later uses verify the cached pair again; legacy or damaged cached binaries are not accepted merely because they are executable. Most targets use FFmpeg 6.1.1; Windows ia32 uses the last available pair, FFmpeg 6.0. Old `FFMPEG_BINARIES_URL`, `FFMPEG_BINARY_RELEASE` and `FFMPEG_BIN` variables do not change these downloads. Use `VEO_FFMPEG_PATH` to choose a trusted installed pair explicitly.
 
-The downloaded binaries retain their separate upstream licenses. `FFmpeg.LICENSE` and `FFmpeg.README` are saved next to the cached tools, including upstream source and build information. The JavaScript CLI remains MIT licensed. No Python installation is needed on supported standalone platforms.
+The downloaded binaries retain their separate upstream licenses. `FFmpeg.LICENSE` and `FFmpeg.README` are saved next to the cached tools, including upstream source and build information. veo itself is MIT licensed. No Python installation is needed on supported standalone platforms.
 
-The existing Node executable is explicitly enabled as yt-dlp's JavaScript runtime for YouTube. Local yt-dlp configuration and plugins are disabled for predictable execution. Arguments are passed without a shell.
+An installed Node.js, Deno or Bun (found on PATH, in that order) is passed to yt-dlp as its JavaScript runtime for YouTube; `VEO_JS_RUNTIME=deno:/path/to/deno` selects one explicitly. Without one, yt-dlp uses its own default. Local yt-dlp configuration and plugins are disabled for predictable execution. Arguments are passed without a shell.
 
 Windows ARM64 uses an FFmpeg/FFprobe pair found on `PATH`, including the usual
 WinGet, Chocolatey and `C:\ffmpeg\bin` locations, or automatically downloads x64
@@ -843,7 +853,8 @@ media tools for Windows 11's x64 emulation.
 
 ### Android / Termux
 
-With Node.js 22+ and npm already installed in Termux:
+With npm installed in Termux (`pkg install nodejs`), npm fetches the native
+Android binary:
 
 ```sh
 npm install -g veodl
@@ -890,11 +901,15 @@ if you need them on subsequent launches of 1.6.1.
 - `VEO_FFMPEG_PATH`: directory containing both `ffmpeg` and `ffprobe` executables (with
   `.exe` on Windows).
 - `VEO_CONFIG`: path to the config file.
+- `VEO_JS_RUNTIME`: `name:path` of the JavaScript runtime passed to yt-dlp, for example
+  `deno:/usr/local/bin/deno` (`node`, `deno`, `bun` or `quickjs`).
+- `VEO_BINARY`: path to a veo executable the npm launcher should start instead of the
+  installed platform package (for testing a local build).
 
 Automatic setup covers Windows x64/ia32/ARM64, macOS x64/ARM64, Linux x64/ARM64,
 and Android through Termux. Windows ARM64 media tools require x64 emulation.
 `--open` uses `termux-open` in Termux; another Android app must be available to view the file.
-Other systems should supply trusted native binaries. Node.js 22+, npm, internet
+Other systems should supply trusted native binaries. Internet
 access, executable private storage and working OS libraries are prerequisites;
 network blocks or unavailable repositories can still prevent setup. Android's
 shared-storage permission must be granted by the user. Maintainers should update
@@ -920,46 +935,47 @@ silently falls back to the pinned release.
 
 ## Develop and publish
 
+veo is a Rust crate (Rust 1.85+). The npm package `veodl` contains only a small launcher
+(`bin/veo.js`); the binaries ship in `veodl-<platform>-<arch>` packages generated from
+`Cargo.toml` by `scripts/npm-packages.mjs`.
+
 ```bash
-npm install
-npm test                 # unit tests, no network
-npm run test:smoke       # real downloads: local HTTP server, real yt-dlp, real FFmpeg
-npm run test:open        # real download plus a controlled desktop-opener replacement
-npm pack
-npm run check:package    # inspect the packed tarball
-npm link
-veo --version
-# Then, authenticated as the account that owns the name:
-npm publish
+cargo build --release                  # target/release/veo
+cargo test                             # unit tests and offline CLI tests, no network
+cargo test --test smoke -- --ignored   # real downloads: local HTTP server, real yt-dlp, real FFmpeg
+cargo clippy --all-targets -- -D warnings
+node scripts/npm-packages.mjs          # sync npm package versions after a version bump
+npm pack && node scripts/check-package.js
 ```
 
-The smoke test generates a two-second synthetic video with FFmpeg, serves it on loopback,
-and runs real yt-dlp downloads. It checks default output, the quality cap, duplicate names,
-audio extraction, conversion, dry-run, format listing, JSON output, metadata embedding,
-resume, batch behaviour, playlist selection and nonzero failures, and verifies that a
-finished download whose destination was unavailable is retried from the local cache
-without contacting the source again. It also confirms that real runs leave `veo history`
-entries, that finished runs clean up their record, and that `veo runs`/`veo stop` report
-nothing left behind. It needs network access once for yt-dlp acquisition; it downloads no
-third-party video. Prepare media tools with `veo doctor fix` before `npm test` on a fresh checkout; the tests themselves use local fixtures and require no network. CI explicitly prepares and verifies the native binary pair before testing.
+The offline tests (`tests/cli.rs`) run the real binary against `tests/fake-backend`, a
+small stand-in for yt-dlp, ffmpeg and ffprobe, in isolated cache and config directories.
+They cover downloads, duplicate names, skip-existing, playlists and entry selection,
+audio, subtitles, naming templates, dry runs and listings, incognito mode, retries by run
+ID, transient-failure back-off, profiles and release notes.
 
-The published tarball only includes `bin/`, `src/`, package metadata, README and LICENSE.
-The lockfile is kept for reproducible development. There is no build step. npm makes the
-shebang-bearing bin executable on installation (on Unix, `chmod +x bin/veo.js` also enables
-direct checkout execution).
+The smoke test prepares the pinned tools with `veo doctor fix`, generates a two-second
+synthetic video with FFmpeg, serves it on loopback and runs real yt-dlp downloads. It checks
+default output, the quality cap, duplicate names, audio extraction, conversion, remuxing,
+dry-run, format listing, JSON output, audio inspection, batch failures, profiles with URL
+lists, retry by run ID from another directory, playlist selection, and that a finished
+download whose destination was unavailable is transferred later without contacting the
+source again. It downloads no third-party video.
 
-Continuous integration runs the unit tests on Windows, macOS and Linux for Node 22 and 24,
-runs the end-to-end smoke test on Node 22, and verifies the packed tarball.
+Continuous integration runs formatting, Clippy, the unit and offline tests, and the smoke
+test on Windows, macOS and Linux, and verifies the npm package. Pushing a tag `vX.Y.Z`
+(matching `Cargo.toml`) builds the binaries for Windows x64/ARM64, macOS x64/ARM64,
+static Linux x64/ARM64 (musl) and Android ARM64, attaches them to a GitHub release and
+publishes the npm packages (`NPM_TOKEN` secret).
 
-Modules separate argument parsing (`src/cli.js`), configuration (`src/config.js`,
-`src/config-errors.js`, `src/config-template.js`), backend setup (`src/backend.js`),
-backend updates (`src/backend-update.js`), download orchestration (`src/downloader.js`,
-`src/download-cache.js`), retry jobs (`src/jobs.js`), playlists (`src/playlist.js`),
-statistics, download history, the run registry and cleanup (`src/stats.js`,
-`src/history.js`, `src/runs.js`, `src/flush.js`), diagnostics (`src/doctor.js`),
-progress (`src/progress.js`), and helpers (`src/utils.js`, `src/paths.js`,
-`src/state.js`, `src/version.js`) so new options and providers can be added without
-replacing the CLI.
+Modules mirror the commands: argument parsing and dispatch (`src/cli.rs`), configuration
+(`src/config*.rs`), backend setup and updates (`src/backend.rs`, `src/tool_setup.rs`,
+`src/backend_update.rs`), download orchestration (`src/downloader.rs`,
+`src/download_cache.rs`, `src/jobs.rs`, `src/playlist.rs`), records (`src/runs.rs`,
+`src/history.rs`, `src/stats.rs`, `src/run_archive.rs`, `src/flush.rs`), diagnostics
+(`src/doctor.rs`, `src/inspect_media.rs`), source discovery over the Chrome DevTools
+Protocol (`src/source_discovery.rs`), terminal output (`src/output.rs`,
+`src/progress.rs`, `src/terminal.rs`) and helpers.
 
 ## License
 

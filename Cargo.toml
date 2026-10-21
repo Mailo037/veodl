@@ -1,0 +1,53 @@
+[package]
+name = "veo"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "A clean, simple video downloader powered by yt-dlp."
+repository = "https://github.com/Mailo037/veodl"
+homepage = "https://github.com/Mailo037/veodl#readme"
+readme = "README.md"
+keywords = ["cli", "video", "downloader", "yt-dlp", "playlist"]
+categories = ["command-line-utilities", "multimedia::video"]
+include = ["src/**/*", "Cargo.toml", "Cargo.lock", "CHANGELOG.md", "README.md", "LICENSE", "docs/**/*", "AGENTS.md"]
+
+[[bin]]
+name = "veo"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+crossterm = "0.29"
+ctrlc = { version = "3", features = ["termination"] }
+flate2 = "1"
+getrandom = "0.3"
+hex = "0.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+tungstenite = { version = "0.27", default-features = false, features = ["handshake"] }
+unicode-normalization = "0.1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+url = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = true

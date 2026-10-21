@@ -1,0 +1,21 @@
+{
+  "name": "veodl-darwin-x64",
+  "version": "2.0.0",
+  "description": "The veo binary for darwin x64 (x86_64-apple-darwin). Install veodl instead.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mailo037/veodl.git"
+  },
+  "homepage": "https://github.com/Mailo037/veodl#readme",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "preferUnplugged": true
+}

@@ -1,7 +1,7 @@
 {
   "name": "veodl",
-  "version": "1.12.1",
-  "description": "A clean, simple video downloader powered by yt-dlp.",
+  "version": "2.0.0",
+  "description": "A clean, simple video downloader powered by yt-dlp. Native binary; no Node.js needed at runtime.",
   "type": "module",
   "bin": {
     "veo": "bin/veo.js",
@@ -9,7 +9,6 @@
   },
   "files": [
     "bin/",
-    "src/",
     "docs/",
     "AGENTS.md",
     "README.md",
@@ -17,15 +16,13 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=16"
   },
   "scripts": {
-    "test": "node --test",
-    "test:smoke": "node scripts/smoke.js",
-    "test:open": "node scripts/smoke-open.js",
+    "test": "cargo test",
+    "build": "cargo build --release",
     "check:package": "node scripts/check-package.js",
-    "prepublishOnly": "npm test",
-    "test:workflows": "node scripts/smoke-workflows.js"
+    "packages": "node scripts/npm-packages.mjs"
   },
   "keywords": [
     "cli",
@@ -51,7 +48,13 @@
   "publishConfig": {
     "access": "public"
   },
-  "devDependencies": {
-    "@xterm/headless": "6.0.0"
+  "optionalDependencies": {
+    "veodl-win32-x64": "2.0.0",
+    "veodl-win32-arm64": "2.0.0",
+    "veodl-darwin-x64": "2.0.0",
+    "veodl-darwin-arm64": "2.0.0",
+    "veodl-linux-x64": "2.0.0",
+    "veodl-linux-arm64": "2.0.0",
+    "veodl-android-arm64": "2.0.0"
   }
 }

@@ -1,0 +1,21 @@
+{
+  "name": "veodl-linux-arm64",
+  "version": "2.0.0",
+  "description": "The veo binary for linux arm64 (aarch64-unknown-linux-musl). Install veodl instead.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mailo037/veodl.git"
+  },
+  "homepage": "https://github.com/Mailo037/veodl#readme",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "preferUnplugged": true
+}

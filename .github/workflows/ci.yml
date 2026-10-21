@@ -8,35 +8,46 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
-    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --check
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit and integration tests
+        run: cargo test
+      # Real end-to-end downloads through the actual CLI, yt-dlp and FFmpeg
+      # with locally generated media. A failure here is a release blocker.
+      - name: End-to-end download test
+        run: cargo test --test smoke -- --ignored
+
+  package:
+    name: npm package
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-      - name: Prepare verified native media tools
-        run: |
-          node --input-type=module -e "import { resolveMediaTools } from './src/backend.js'; await resolveMediaTools({ find: async () => undefined, status: console.error });"
-      - name: Unit tests
-        run: npm test
-      # Real end-to-end downloads through the actual CLI and yt-dlp backend.
-      # A failure here is a release blocker, not flakiness to ignore.
-      - name: End-to-end download test
-        if: matrix.node == 22
-        run: npm run test:smoke
+          node-version: 22
+      - name: Platform packages match Cargo.toml
+        run: node scripts/npm-packages.mjs --check
       - name: Published package contents
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: |
           npm pack
-          npm run check:package
+          node scripts/check-package.js

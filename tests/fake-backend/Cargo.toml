@@ -1,0 +1,12 @@
+[package]
+name = "veo-fake-backend"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Offline stand-in for yt-dlp, ffmpeg and ffprobe used by veo's integration tests."
+
+[[bin]]
+name = "fake-backend"
+path = "main.rs"
+
+[workspace]

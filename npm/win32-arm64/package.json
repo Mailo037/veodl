@@ -1,0 +1,21 @@
+{
+  "name": "veodl-win32-arm64",
+  "version": "2.0.0",
+  "description": "The veo binary for win32 arm64 (aarch64-pc-windows-msvc). Install veodl instead.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mailo037/veodl.git"
+  },
+  "homepage": "https://github.com/Mailo037/veodl#readme",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/"
+  ],
+  "preferUnplugged": true
+}
