@@ -26,7 +26,7 @@ const files = new Map();
 
 const main = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 main.version = version;
-main.optionalDependencies = Object.fromEntries(Object.keys(PLATFORMS).map(name => [`veodl-${name}`, version]));
+delete main.optionalDependencies;
 files.set(path.join(root, 'package.json'), json(main));
 
 for (const [name, platform] of Object.entries(PLATFORMS)) {

@@ -51,4 +51,4 @@ jobs:
       - name: Published package contents
         run: |
           npm pack
-          node scripts/check-package.js
+          node scripts/check-package.js --metadata

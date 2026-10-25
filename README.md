@@ -968,15 +968,10 @@ test on Windows, macOS and Linux, and verifies the npm package. Pushing a tag `v
 static Linux x64/ARM64 (musl) and Android ARM64 and uploads the eight npm tarballs
 as an Actions artifact. The `rust-port` branch also triggers this build.
 
-GitHub only builds and packages; it needs no npm token and never publishes to npm.
-After the build succeeds, download its `npm-2.0.0` artifact with
-`gh run download <run-id> --name npm-2.0.0 --dir release/npm`.
-Run `npm run release -- --check` to verify all eight tarballs and their checksums.
-Then use `npm login` and `npm run release` locally: npm publishes the seven platform
-packages first and `veodl` last, using your local login and interactive npm
-authentication. Do not publish just the root package with `npm publish`.
-The build workflow first runs CI on Windows, macOS and Linux and requires all
-seven native builds to succeed before assembling the artifact.
+GitHub builds all seven native targets and bundles them into the single veodl npm
+package. No platform packages or npm credentials are needed on GitHub. Download
+its npm-2.0.0 artifact and publish locally with npm run release. Users only need
+npm install -g veodl; the launcher automatically selects the bundled binary.
 
 Modules mirror the commands and stay small (larger ones are directories of focused
 submodules): argument parsing and dispatch (`src/cli/`), configuration (`src/config*.rs`,

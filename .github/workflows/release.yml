@@ -82,18 +82,16 @@ jobs:
       - name: Assemble packages
         run: |
           node scripts/npm-packages.mjs --check
-          mkdir -p release/npm
+          mkdir -p release/npm native
           for dir in artifacts/*; do
             package=$(basename "$dir")
-            mkdir -p "npm/$package/bin"
-            cp "$dir"/* "npm/$package/bin/"
-            chmod 755 "npm/$package/bin/"*
-            npm pack "./npm/$package" --pack-destination release/npm
+            mkdir -p "native/$package"
+            cp "$dir"/* "native/$package/"
+            chmod 755 "native/$package/"*
           done
           npm pack
           node scripts/check-package.js
           mv veodl-*.tgz release/npm/
-          node scripts/release-manifest.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: npm-2.0.0

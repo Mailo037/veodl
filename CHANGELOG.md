@@ -6,7 +6,7 @@ All notable changes to veo. This project follows [Semantic Versioning](https://s
 
 ### Changed
 
-- **Native Rust binary**: veo is rewritten in Rust and ships as a single native executable per platform. Node.js is no longer required to run veo; `npm install -g veodl` keeps working and installs the matching prebuilt binary through a per-platform package. Commands, flags, JSON output, config files, profiles, run records, history, statistics and retry jobs stay compatible, including resumable staging directories of 1.x.
+- **Native Rust binary**: veo is rewritten in Rust and ships as a single native executable per platform. Node.js is no longer required to run veo; `npm install -g veodl` keeps working and installs the matching prebuilt binary from the single veodl package. Commands, flags, JSON output, config files, profiles, run records, history, statistics and retry jobs stay compatible, including resumable staging directories of 1.x.
 - Startup is about ten times faster, and SHA-256 checks of yt-dlp, FFmpeg and FFprobe run in parallel with hardware acceleration, so every run still verifies the managed tools before use.
 - A single-URL download reuses the metadata read while checking the page, so the backend starts once instead of twice per URL. Dry runs, quality and subtitle listings benefit the same way.
 - First-use FFmpeg/FFprobe setup downloads both tools in parallel and publishes them by rename instead of copying them again.

@@ -13,7 +13,8 @@
     "AGENTS.md",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "native/"
   ],
   "engines": {
     "node": ">=16"
@@ -48,14 +49,5 @@
   "preferGlobal": true,
   "publishConfig": {
     "access": "public"
-  },
-  "optionalDependencies": {
-    "veodl-win32-x64": "2.0.0",
-    "veodl-win32-arm64": "2.0.0",
-    "veodl-darwin-x64": "2.0.0",
-    "veodl-darwin-arm64": "2.0.0",
-    "veodl-linux-x64": "2.0.0",
-    "veodl-linux-arm64": "2.0.0",
-    "veodl-android-arm64": "2.0.0"
   }
 }

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Starts the native veo binary that npm installed from the matching platform
-// package (veodl-<platform>-<arch>). Exit codes and signals pass through.
+// Automatically starts the matching native binary bundled in veodl.
+// Exit codes and signals pass through.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const require = createRequire(import.meta.url);
+const root = fileURLToPath(new URL('../', import.meta.url));
 const target = `${process.platform}-${process.arch}`;
 const executable = process.platform === 'win32' ? 'veo.exe' : 'veo';
 
@@ -15,10 +15,8 @@ function binaryPath() {
   // Windows on ARM can run the x64 build through emulation.
   const candidates = [target, ...(target === 'win32-arm64' ? ['win32-x64'] : [])];
   for (const candidate of candidates) {
-    try {
-      const file = path.join(path.dirname(require.resolve(`veodl-${candidate}/package.json`)), 'bin', executable);
-      if (existsSync(file)) return file;
-    } catch { /* Try the next candidate. */ }
+    const file = path.join(root, 'native', candidate, executable);
+    if (existsSync(file)) return file;
   }
   return null;
 }
@@ -26,7 +24,7 @@ function binaryPath() {
 const binary = binaryPath();
 if (!binary) {
   process.stderr.write(`veo: no prebuilt binary for ${target} is installed.\n`
-    + 'Reinstall with optional dependencies enabled: npm install -g veodl\n'
+    + 'Reinstall with npm install -g veodl\n'
     + 'Or build from source: cargo install --git https://github.com/Mailo037/veodl\n');
   process.exit(1);
 }

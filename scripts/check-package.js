@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { globSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 
-const archive = process.argv[2] || globSync('veodl-[0-9]*.tgz').sort().at(-1);
+const archive = process.argv.slice(2).find(arg => !arg.startsWith('--')) || globSync('veodl-[0-9]*.tgz').sort().at(-1);
 if (!archive) {
   console.error('FAIL: no package tarball found. Run npm pack first.');
   process.exit(1);
@@ -33,8 +33,9 @@ assert(archive.endsWith(`veodl-${pkg.version}.tgz`), `Tarball name does not matc
 assert(contents.get('package/CHANGELOG.md').toString().includes(`## ${pkg.version}`), `CHANGELOG.md has no "## ${pkg.version}" section`);
 assert(!pkg.scripts?.preinstall && !pkg.scripts?.install && !pkg.scripts?.postinstall, 'The package must not run install scripts');
 assert.deepEqual(Object.keys(pkg.dependencies || {}), [], 'The launcher has no runtime dependencies');
-for (const [name, version] of Object.entries(pkg.optionalDependencies || {})) {
-  assert.match(name, /^veodl-(win32|darwin|linux|android)-(x64|arm64)$/, `Unexpected optional dependency ${name}`);
-  assert.equal(version, pkg.version, `${name} must be pinned to ${pkg.version}`);
+assert.equal(Object.keys(pkg.optionalDependencies || {}).length, 0, 'Release must be self contained');
+if (!process.argv.includes('--metadata')) for (const platform of ['win32-x64','win32-arm64','darwin-x64','darwin-arm64','linux-x64','linux-arm64','android-arm64']) {
+ const binary = 'package/native/' + platform + '/' + (platform.startsWith('win32') ? 'veo.exe' : 'veo');
+ assert(contents.get(binary)?.length > 1000000, 'Missing native binary: ' + binary);
 }
-console.log(`PASS: ${archive}: ${names.length} entries, launcher, docs, ${Object.keys(pkg.optionalDependencies).length} platform packages, version ${pkg.version} consistent.`);
+console.log('PASS: self-contained veodl ' + pkg.version + ', all seven binaries included.');
