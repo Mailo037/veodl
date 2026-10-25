@@ -13,17 +13,29 @@ use crate::progress::Reporter;
 /// Check that a saved video plays broadly (H.264 yuv420p + AAC). Without
 /// `convert` only a note is shown; with it the file becomes a compatible MP4,
 /// re-encoding only the streams that need it.
-pub fn ensure_compatibility(file: &Path, backend: &Backend, runner: &Runner, cancel: &Cancel, convert: bool, reporter: &dyn Reporter) -> Result<PathBuf> {
+pub fn ensure_compatibility(
+    file: &Path,
+    backend: &Backend,
+    runner: &Runner,
+    cancel: &Cancel,
+    convert: bool,
+    reporter: &dyn Reporter,
+    probe_out: &mut Option<Value>,
+) -> Result<PathBuf> {
+    *probe_out = None;
     let probe = runner(
         &backend.ffprobe(),
-        &["-v", "error", "-show_streams", "-of", "json"].iter().map(|arg| arg.to_string()).chain([paths::display(file)]).collect::<Vec<_>>(),
+        &["-v", "error", "-show_format", "-show_streams", "-of", "json"].iter().map(|arg| arg.to_string()).chain([paths::display(file)]).collect::<Vec<_>>(),
         cancel,
         None,
     );
     let streams = probe.and_then(|raw| {
         let parsed: Value = serde_json::from_str(&raw)?;
         match parsed.get("streams") {
-            Some(Value::Array(streams)) => Ok(streams.clone()),
+            Some(Value::Array(streams)) => {
+                *probe_out = Some(parsed.clone());
+                Ok(streams.clone())
+            }
             _ => Err(Error::msg("No stream metadata")),
         }
     });
@@ -69,6 +81,8 @@ pub fn ensure_compatibility(file: &Path, backend: &Backend, runner: &Runner, can
     } else {
         "Converting to compatible H.264/AAC; this takes time and may lose quality…"
     });
+    // A conversion/remux creates a new file; its old probe cannot verify it.
+    *probe_out = None;
     let directory = paths::dirname(file);
     let temporary = directory.join("compatible-output.mp4");
     let target = directory.join("media.mp4");

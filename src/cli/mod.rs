@@ -263,6 +263,28 @@ mod tests {
     }
 
     #[test]
+    fn performance_settings_round_trip_through_profiles_and_retry_jobs() {
+        let config =
+            serde_json::json!({"profiles":{"fast":{"nativeHttp":false,"httpConnections":8,"stagingDir":"relative-cache","section":"*1-2","fastCut":true}}});
+        let options = parse_cli(&args(&["https://example.com/v", "--profile", "fast"]), config.as_object().unwrap()).unwrap();
+        assert!(!options.native_http);
+        assert_eq!(options.http_connections, 8);
+        assert!(options.fast_cut);
+        let saved = options.public();
+        assert!(std::path::Path::new(saved["stagingDir"].as_str().unwrap()).is_absolute());
+        let restored = parse_cli(&args(&["https://example.com/v"]), &saved).unwrap();
+        assert!(!restored.native_http && restored.fast_cut);
+        assert_eq!(restored.http_connections, 8);
+        let explicit = parse_cli(
+            &args(&["https://example.com/v", "--profile", "fast", "--native-http", "--no-fast-cut", "--http-connections", "2"]),
+            config.as_object().unwrap(),
+        )
+        .unwrap();
+        assert!(explicit.native_http && !explicit.fast_cut);
+        assert_eq!(explicit.http_connections, 2);
+    }
+
+    #[test]
     fn suggests_commands_and_subcommand_flags() {
         assert_eq!(mistyped_command_option(&args(&["histroy"])).as_deref(), Some("Unknown command \"histroy\". Did you mean \"history\"?"));
         assert_eq!(mistyped_command_option(&args(&["history", "--limt", "3"])).as_deref(), Some("Unknown option \"--limt\". Did you mean \"--limit\"?"));

@@ -109,6 +109,19 @@ The run record is stored in veo's per-user cache on the device that ran the down
 
 ## Operational notes
 
+- Rust handles eligible anonymous direct HTTP video transfers by default. Use
+  `--http-connections 4` (1-16) to set its maximum or `--no-native-http` to keep
+  yt-dlp transfers. DASH/HLS, authentication and transformations remain with
+  yt-dlp. Host connection budgets are shared across downloads and fragments;
+  adaptive reductions recover gradually after successful operations.
+- `--staging-dir output` stages beside the destination; an explicit directory
+  selects another staging drive. These roots are included in expiration cleanup
+  and `veo flush`. The local cache remains the default. `--resume` reuses native
+  HTTP byte ranges only when the source still has the same strong ETag.
+- `--fast-cut` requires `--section` and opts into faster cuts at nearby keyframes;
+  omit it for precise cuts. Profiles use `nativeHttp`, `httpConnections`,
+  `stagingDir` and `fastCut`; CLI flags override profile defaults.
+
 - `veo <URL> --incognito --json` saves media without a run ID, retry job, history, run archive, output duplicate record or statistics. It disables yt-dlp's filesystem cache. A config profile can set `"incognito": true`; `--no-incognito` overrides it. Incognito cannot use `--resume`, `--skip-existing`, or retry. Its temporary staging data is removed after the attempt; the output file and records outside veo (such as shell history or server logs) still exist.
 - Add `--neutral-filename` or `"neutralFilename": true` to use random media filenames instead of titles. This option is independent of `--incognito` and overrides custom file and folder naming for that request.
 

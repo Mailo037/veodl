@@ -23,7 +23,8 @@ impl Fixture {
     }
 
     fn run_in(&self, directory: &Path, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_veo"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_veo"));
+        command
             .args(args)
             .current_dir(directory)
             .env("VEO_CONFIG", self.root.join("config.json"))
@@ -32,9 +33,13 @@ impl Fixture {
             .env("XDG_CACHE_HOME", &self.root)
             .env("HOME", &self.root)
             .env_remove("VEO_YT_DLP_PATH")
-            .env_remove("VEO_FFMPEG_PATH")
-            .output()
-            .expect("veo runs")
+            .env_remove("VEO_FFMPEG_PATH");
+        // Optional pre-existing real tools keep local regression runs offline.
+        if let Some(directory) = std::env::var_os("VEO_SMOKE_TOOLS") {
+            let directory = PathBuf::from(directory);
+            command.env("VEO_YT_DLP_PATH", directory.join(format!("yt-dlp{}", std::env::consts::EXE_SUFFIX))).env("VEO_FFMPEG_PATH", directory);
+        }
+        command.output().expect("veo runs")
     }
 }
 
@@ -124,7 +129,9 @@ fn real_downloads_through_yt_dlp() {
     assert_ok(&fixture.run(&["doctor", "fix"]));
     // doctor fix installs the pinned pair into the cache unless a system pair exists.
     let name = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
-    let ffmpeg = find(&root, &name)
+    let ffmpeg = std::env::var_os("VEO_SMOKE_TOOLS")
+        .map(|directory| PathBuf::from(directory).join(&name))
+        .or_else(|| find(&root, &name))
         .or_else(|| std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).map(|directory| directory.join(&name)).find(|file| file.is_file()))
         .expect("an ffmpeg after doctor fix");
     let source = root.join("fixture.mp4");
@@ -157,6 +164,15 @@ fn real_downloads_through_yt_dlp() {
     let media = fs::read(&source).unwrap();
     let server = serve(media.clone());
     let url = format!("http://127.0.0.1:{}/original-title.mp4", server.port);
+
+    let native = fixture.run(&[&url, "--json", "--verify", "--staging-dir", "output", "-o", "./native"]);
+    assert_ok(&native);
+    assert!(String::from_utf8_lossy(&native.stderr).contains("Rust HTTP"), "{}", String::from_utf8_lossy(&native.stderr));
+    assert_eq!(fs::read(json(&native)["files"][0].as_str().unwrap()).unwrap(), media);
+    let backend = fixture.run(&[&url, "--no-native-http", "--verify", "--json", "-o", "./backend"]);
+    assert_ok(&backend);
+    assert!(!String::from_utf8_lossy(&backend.stderr).contains("Rust HTTP"));
+    assert_eq!(fs::read(json(&backend)["files"][0].as_str().unwrap()).unwrap(), media);
 
     assert_ok(&fixture.run(&[&url]));
     assert_ok(&fixture.run(&[&url, "-q", "720p"]));

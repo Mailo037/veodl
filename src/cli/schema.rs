@@ -9,7 +9,9 @@ use crate::error::{Error, Result};
 use crate::paths;
 use crate::suggest::suggest;
 
-pub(super) const STRING_OPTIONS: [(&str, Option<char>); 22] = [
+pub(super) const STRING_OPTIONS: [(&str, Option<char>); 24] = [
+    ("staging-dir", None),
+    ("http-connections", None),
     ("quality", Some('q')),
     ("output", Some('o')),
     ("rename", Some('r')),
@@ -34,7 +36,9 @@ pub(super) const STRING_OPTIONS: [(&str, Option<char>); 22] = [
     ("", None),
 ];
 
-pub(super) const BOOLEAN_OPTIONS: [(&str, Option<char>); 33] = [
+pub(super) const BOOLEAN_OPTIONS: [(&str, Option<char>); 35] = [
+    ("fast-cut", None),
+    ("native-http", None),
     ("experimental-fragments", None),
     ("compatible", None),
     ("recode", None),
@@ -266,7 +270,9 @@ pub(super) fn config_flag(config: &Map<String, Value>, key: &str, fallback: bool
 pub(super) fn option_defaults(config: &Map<String, Value>) -> HashMap<&'static str, Val> {
     let mut defaults = HashMap::new();
     let cwd = paths::display(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let strings: [(&str, &str, Option<&str>); 21] = [
+    let strings: [(&str, &str, Option<&str>); 23] = [
+        ("staging-dir", "stagingDir", None),
+        ("http-connections", "httpConnections", Some("4")),
         ("quality", "quality", Some("best")),
         ("output", "output", None),
         ("rename", "rename", None),
@@ -298,7 +304,9 @@ pub(super) fn option_defaults(config: &Map<String, Value>) -> HashMap<&'static s
             defaults.insert(name, Val::Str(value));
         }
     }
-    let flags: [(&str, &str, bool); 27] = [
+    let flags: [(&str, &str, bool); 29] = [
+        ("fast-cut", "fastCut", false),
+        ("native-http", "nativeHttp", true),
         ("compatible", "compatible", false),
         ("recode", "recode", false),
         ("adaptive-concurrency", "adaptiveConcurrency", true),

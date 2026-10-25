@@ -63,6 +63,9 @@ pub fn parse_changelog(markdown: &str) -> Vec<Release> {
             continue;
         }
         if re!(r"^##\s").is_match(line) {
+            if releases.is_empty() && line.trim().eq_ignore_ascii_case("## Unreleased") {
+                continue;
+            }
             break;
         }
         let Some(release) = releases.last_mut() else { continue };

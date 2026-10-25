@@ -13,18 +13,23 @@ const SOURCE_OPTIONS_GUIDE: &str = r#"// veo: source discovery options v1
 // Command-line flags override these values, including --no-deep-scan and --no-list-sources.
 "#;
 
-const PROFILE_OPTIONS_GUIDE: &str = r#"// veo: profile download options v5
+const PROFILE_OPTIONS_GUIDE: &str = r#"// veo: profile download options v6
 // Any global option can also be placed inside a profile.
 // Copy the settings you want into "profiles" > "default" or a named profile.
 // Remove the leading // on copied settings; separate entries with commas.
 // Speed without reducing the selected video quality:
 // "quality": "best",
 // "concurrentDownloads": 2,    // Parallel URLs/batch items: 1-4; default 2
-// "adaptiveConcurrency": true, // Reduce parallelism and retry transient errors
+// "adaptiveConcurrency": true, // Host-local back-off and gradual recovery
 // "concurrentFragments": 8,    // DASH/HLS fragments: 1-64; default 8
 // Values 17-64 are experimental and require terminal confirmation before download.
 // "experimentalFragments": false, // true explicitly accepts 17-64, including in scripts
 // More connections may trigger server limits and do not guarantee better speed.
+// "nativeHttp": true,        // Rust downloader for eligible direct HTTP media
+// "httpConnections": 4,      // 1-16; shares a host budget with other videos/fragments
+// "stagingDir": "output",    // Stage beside the destination; or choose a directory
+// Default staging remains the local cache; prefer it for slow network drives.
+// "fastCut": false,          // With section: true cuts at nearby keyframes, less precisely
 // "deepScan": true,           // Check every observed source candidate
 // "timeout": "2m",           // Source-search deadline, 5s to 10m
 // "listSources": false,      // List sources and exit for one URL

@@ -81,8 +81,15 @@ pub fn run_job(options: &Options, mut context: JobContext) -> Result<i32> {
     );
     if !options.incognito {
         crate::download_cache::cleanup(&crate::download_cache::root(), state::now_ms())?;
+        for root in crate::download_cache::registered_roots(&paths::cache_base())? {
+            crate::download_cache::cleanup(&root, state::now_ms())?;
+        }
     }
-    let private_root = if options.incognito { Some(crate::fsutil::temp_dir(&std::env::temp_dir(), "veo-incognito-")?) } else { None };
+    let private_root = if options.incognito {
+        Some(crate::fsutil::temp_dir(&crate::download_cache::root_for(options, &std::env::temp_dir()), "veo-incognito-")?)
+    } else {
+        None
+    };
     let job = Mutex::new(job);
     let persist = || -> Result<()> {
         if options.incognito {
@@ -104,7 +111,7 @@ pub fn run_job(options: &Options, mut context: JobContext) -> Result<i32> {
             change(item);
         }
     };
-    let pool = run_pool(&requests, &|| adaptive.reduced(concurrency), context.cancel, &|request: &Options, index: usize| {
+    let pool = run_pool(&requests, &|| concurrency, context.cancel, &|request: &Options, index: usize| {
         let target_key = serde_json::to_string(&json!([request.url, paths::display(paths::resolve(&request.output))])).unwrap_or_default();
         let gate = active_targets.lock().unwrap().entry(target_key).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
         let _serial = gate.lock().unwrap_or_else(|poison| poison.into_inner());

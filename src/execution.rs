@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -9,26 +9,71 @@ use crate::cancel::Cancel;
 use crate::error::{Error, Result};
 use crate::progress::Reporter;
 
-/// Shared back-off: retries halve the parallelism of every running download.
-#[derive(Debug)]
-pub struct Adaptive {
+/// Host-local back-off and a shared connection budget for videos and fragments.
+#[derive(Debug, Default)]
+struct HostState {
     divisor: AtomicU32,
+    successes: AtomicU32,
+    active: Mutex<u32>,
 }
 
-impl Default for Adaptive {
-    fn default() -> Self {
-        Adaptive { divisor: AtomicU32::new(1) }
+#[derive(Debug, Default)]
+pub struct Adaptive {
+    state: Arc<HostState>,
+    hosts: Arc<Mutex<HashMap<String, Arc<HostState>>>>,
+}
+
+pub struct Connections {
+    state: Arc<HostState>,
+    pub count: u32,
+}
+
+impl Drop for Connections {
+    fn drop(&mut self) {
+        *self.state.active.lock().unwrap() -= self.count;
     }
 }
 
 impl Adaptive {
+    pub fn for_url(&self, url: &str) -> Self {
+        let host = url::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_ascii_lowercase)).unwrap_or_else(|| "unknown".into());
+        let state = self.hosts.lock().unwrap().entry(host).or_default().clone();
+        Self { state, hosts: self.hosts.clone() }
+    }
+
     pub fn reduced(&self, limit: u32) -> u32 {
-        (limit / self.divisor.load(Ordering::SeqCst).max(1)).max(1)
+        (limit / self.state.divisor.load(Ordering::SeqCst).max(1)).max(1)
+    }
+
+    /// Reserve connections before starting a backend. Workers wait rather than
+    /// exiting, so recovered capacity can be used later in the same playlist.
+    pub fn acquire(&self, requested: u32, budget: u32, parallel_videos: u32, adaptive: bool, cancel: &Cancel) -> Result<Connections> {
+        loop {
+            cancel.check()?;
+            let budget = if adaptive { self.reduced(budget) } else { budget.max(1) };
+            let wanted = requested.max(1).min((budget / parallel_videos.max(1)).max(1));
+            {
+                let mut active = self.state.active.lock().unwrap();
+                if *active < budget {
+                    let count = wanted.min(budget - *active);
+                    *active += count;
+                    return Ok(Connections { state: self.state.clone(), count });
+                }
+            }
+            cancel.sleep(Duration::from_millis(50))?;
+        }
     }
 
     fn back_off(&self) {
-        let current = self.divisor.load(Ordering::SeqCst).max(1);
-        self.divisor.store((current * 2).min(16), Ordering::SeqCst);
+        self.state.successes.store(0, Ordering::SeqCst);
+        let _ = self.state.divisor.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| Some((current.max(1) * 2).min(16)));
+    }
+
+    fn succeeded(&self) {
+        if self.state.successes.fetch_add(1, Ordering::SeqCst) >= 3 {
+            self.state.successes.store(0, Ordering::SeqCst);
+            let _ = self.state.divisor.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| Some((current / 2).max(1)));
+        }
     }
 }
 
@@ -68,7 +113,7 @@ pub fn run_pool<T: Sync>(items: &[T], limit: &(dyn Fn() -> u32 + Sync), cancel: 
 // fragment temp file (e.g. "...media.mp4.part-Frag29"). Those are worth
 // retrying with reduced parallelism; permanent failures still fail fast.
 pub fn retryable(error: &Error) -> bool {
-    re!(r"(?i)HTTP(?: Error)?\s*(?:429|5[0-9][0-9])|too many requests|timed? ?out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|temporary failure|connection (?:reset|aborted)|\.part-Frag[0-9]+").is_match(&error.message)
+    re!(r"(?i)HTTP(?: Error)?\s*(?:429|5[0-9][0-9])|too many requests|timed? ?out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|temporary failure|connection (?:reset|aborted|interrupted|failed)|\.part-Frag[0-9]+").is_match(&error.message)
 }
 
 pub fn adaptive_run<T>(
@@ -84,7 +129,12 @@ pub fn adaptive_run<T>(
     loop {
         cancel.check()?;
         match run(attempt) {
-            Ok(value) => return Ok(value),
+            Ok(value) => {
+                if enabled {
+                    state.succeeded();
+                }
+                return Ok(value);
+            }
             Err(error) => {
                 if !enabled || cancel.is_cancelled() || !retryable(&error) || attempt >= 2 {
                     return Err(error);
@@ -216,5 +266,35 @@ mod tests {
         timings.insert("download".into(), 1250.into());
         timings.insert("saving".into(), 50.into());
         assert_eq!(format_timings(&timings), "Timing: download/backend 1.3s | saving 0.1s");
+    }
+
+    #[test]
+    fn backoff_is_host_local_and_recovers_after_successes() {
+        let root = Adaptive::default();
+        let busy = root.for_url("https://busy.example/a");
+        let same = root.for_url("https://busy.example/b");
+        let other = root.for_url("https://other.example/a");
+        busy.back_off();
+        assert_eq!(same.reduced(8), 4);
+        assert_eq!(other.reduced(8), 8);
+        for _ in 0..4 {
+            same.succeeded();
+        }
+        assert_eq!(busy.reduced(8), 8);
+    }
+
+    #[test]
+    fn videos_and_fragments_share_a_cancellable_budget() {
+        let host = Adaptive::default().for_url("https://example.com");
+        let cancel = Cancel::new();
+        let first = host.acquire(8, 8, 2, true, &cancel).unwrap();
+        let second = host.acquire(8, 8, 2, true, &cancel).unwrap();
+        assert_eq!(first.count + second.count, 8);
+        let stopped = Cancel::new();
+        stopped.cancel();
+        assert!(host.acquire(8, 8, 2, true, &stopped).is_err());
+        drop(first);
+        let third = host.acquire(8, 8, 2, true, &cancel).unwrap();
+        assert_eq!(third.count + second.count, 8);
     }
 }

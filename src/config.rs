@@ -13,7 +13,11 @@ use crate::terminal::{self, Std};
 
 /// Keys accepted in the config file, with their JSON type. Every value is a
 /// default only: an explicit command-line flag always wins.
-pub const CONFIG_KEYS: [(&str, &str); 42] = [
+pub const CONFIG_KEYS: [(&str, &str); 46] = [
+    ("stagingDir", "string"),
+    ("fastCut", "boolean"),
+    ("nativeHttp", "boolean"),
+    ("httpConnections", "number"),
     ("concurrentDownloads", "number"),
     ("adaptiveConcurrency", "boolean"),
     ("filenameTemplate", "string"),

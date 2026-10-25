@@ -43,7 +43,14 @@ pub fn resolve_page_source(
     let listing = options.dry_run || options.list_sources || options.list_formats || options.list_qualities || options.list_subs;
     if !options.incognito
         && !listing
-        && downloader::read_ready_transfer(options, &crate::download_cache::root(), cancel, None, crate::state::now_ms())?.is_some()
+        && downloader::read_ready_transfer(
+            options,
+            &crate::download_cache::root_for(options, &crate::download_cache::root()),
+            cancel,
+            None,
+            crate::state::now_ms(),
+        )?
+        .is_some()
     {
         return Ok(PageSource::default());
     }

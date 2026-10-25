@@ -64,6 +64,26 @@ pub fn flush(root: &Path, timeout: Duration, status: &dyn Fn(&str), stats: bool)
             fs::remove_dir_all(entry.path())?;
             flushed.downloads += 1;
         }
+        for directory in crate::download_cache::registered_roots(&root)? {
+            for entry in fs::read_dir(&directory)?.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) || !re!(r"^\.veo-part-[a-f0-9]{24}$").is_match(&name) {
+                    continue;
+                }
+                let manifest: Option<serde_json::Value> = crate::state::read_json(&entry.path().join("job.json")).ok().flatten();
+                if !manifest
+                    .is_some_and(|manifest| manifest["version"] == 1 && manifest["requestKey"].as_str().is_some_and(|key| name == format!(".veo-part-{key}")))
+                {
+                    continue;
+                }
+                if fs::symlink_metadata(entry.path().join(".lock")).is_ok() {
+                    flushed.skipped += 1;
+                    continue;
+                }
+                fs::remove_dir_all(entry.path())?;
+                flushed.downloads += 1;
+            }
+        }
         for entry in children(&root, "jobs")? {
             if flushed.skipped > 0 {
                 continue; // Older runs may still be updating their retry jobs.

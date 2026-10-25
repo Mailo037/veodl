@@ -42,17 +42,33 @@ fn state_file(name: &str) -> PathBuf {
 }
 
 fn yt_dlp(args: &[String]) {
+    if let Ok(log) = env::var("VEO_FAKE_LOG") {
+        use std::io::Write;
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(log) {
+            let _ = writeln!(file, "{}", serde_json::to_string(args).unwrap());
+        }
+    }
     if args.iter().any(|arg| arg == "--version") {
         println!("2026.08.19");
         return;
     }
-    let url = args.last().cloned().unwrap_or_default();
+    let url = match value_after(args, "--load-info-json") {
+        Some(file) => {
+            let info: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+            info["webpage_url"].as_str().unwrap_or("https://example.com/v").to_string()
+        }
+        None => args.last().cloned().unwrap_or_default(),
+    };
     if url.contains("/missing") {
         eprintln!("ERROR: [generic] Unable to download webpage: HTTP Error 404: Not Found");
         exit(1);
     }
     if url.contains("/page") {
         eprintln!("ERROR: Unsupported URL: {url}");
+        exit(1);
+    }
+    if url.contains("/expired") && value_after(args, "--load-info-json").is_some() {
+        eprintln!("ERROR: HTTP Error 403: Expired media URL");
         exit(1);
     }
     if url.contains("/busy") {
@@ -73,9 +89,20 @@ fn yt_dlp(args: &[String]) {
                 None => (1..=3).map(entry).collect(),
             };
             println!(r#"{{"_type":"playlist","id":"list","title":"Fixture List","extractor_key":"Generic","entries":[{}]}}"#, entries.join(","));
+        } else if let Some(index) = url
+            .rsplit('/')
+            .next()
+            .and_then(|value| value.strip_prefix('e'))
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| (1..=3).contains(index))
+        {
+            let mut info: serde_json::Value = serde_json::from_str(&entry(index)).unwrap();
+            info["webpage_url"] = serde_json::Value::String(url.clone());
+            println!("{info}");
         } else {
             println!(
-                r#"{{"id":"vid1","title":"Fixture Video","extractor":"generic","extractor_key":"Generic","channel":"Fixture Channel","upload_date":"20240102","formats":{FORMATS},"subtitles":{{"en":[{{"ext":"vtt","name":"English"}},{{"ext":"srt"}}],"de":[{{"ext":"vtt"}}]}},"automatic_captions":{{}}}}"#
+                r#"{{"id":"vid1","webpage_url":{},"title":"Fixture Video","extractor":"generic","extractor_key":"Generic","channel":"Fixture Channel","upload_date":"20240102","formats":{FORMATS},"subtitles":{{"en":[{{"ext":"vtt","name":"English"}},{{"ext":"srt"}}],"de":[{{"ext":"vtt"}}]}},"automatic_captions":{{}}}}"#,
+                quote(&url)
             );
         }
         return;
@@ -118,6 +145,11 @@ fn main() {
     let program = env::args().next().unwrap_or_default();
     let name = Path::new(&program).file_stem().map(|stem| stem.to_string_lossy().to_lowercase()).unwrap_or_default();
     if name.starts_with("ffprobe") {
+        if let Ok(log) = env::var("VEO_FAKE_PROBE_LOG") {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new().create(true).append(true).open(log).unwrap();
+            writeln!(file, "{}", serde_json::to_string(&args).unwrap()).unwrap();
+        }
         if args.iter().any(|arg| arg == "-version") {
             println!("ffprobe version fake");
             return;

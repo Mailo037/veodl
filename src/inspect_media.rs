@@ -169,6 +169,16 @@ pub fn verify_saved_media(file: &Path, audio: bool, cancel: &Cancel) -> Result<M
     Ok(report)
 }
 
+/// Reuse a successful compatibility probe only when saving kept the exact file
+/// identity (a hard link). Copies and converted outputs still get a fresh probe.
+pub fn verify_probe(probe: &Value, file: &Path, audio: bool) -> Result<()> {
+    let wanted = if audio { "audio" } else { "video" };
+    if !probe.get("streams").and_then(Value::as_array).is_some_and(|streams| streams.iter().any(|stream| stream["codec_type"] == wanted)) {
+        return Err(Error::msg(format!("Verification failed for {}: no {wanted} track found.", file.display())));
+    }
+    Ok(())
+}
+
 pub fn inspect_run(
     id: &str,
     check_audio: bool,

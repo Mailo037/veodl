@@ -4,7 +4,17 @@ All notable changes to veo. This project follows [Semantic Versioning](https://s
 
 ## 2.0.1
 
+### Added
+
+- Rust HTTP transfers for eligible direct media, with pooled connections, parallel byte ranges written into one file, strong-ETag resume validation and single-stream/backend fallbacks. `--http-connections` selects 1-16 connections; `--no-native-http` keeps the yt-dlp transfer path. Authenticated and transformed downloads continue through yt-dlp.
+- `--staging-dir output` stages beside the destination, or an explicit path chooses another staging drive. Registered staging roots participate in expiration cleanup and `veo flush`; incognito staging stays private and unregistered.
+- `--fast-cut` opts into faster, less precise keyframe-aligned section downloads. Precise cuts remain the default.
+
 ### Changed
+
+- Full extraction results are reused for downloading through a temporary private info file removed after the backend exits. Expired media information is refreshed automatically. Playlist entries use their direct page URL when available instead of repeatedly extracting the parent collection.
+- Downloads and fragments share host-local connection budgets. Transient failures reduce capacity for that host; four successful operations restore one back-off step without retiring playlist workers.
+- Compatibility checks and optional saved-media verification share their probe when saving preserves the file identity, size and modification time. Converted files and cross-filesystem copies are probed again.
 
 - Release tags build and verify all seven native targets, then publish the single `veodl` npm package through GitHub Actions using OIDC trusted publishing. No npm token is stored in GitHub.
 

@@ -25,6 +25,10 @@ pub struct Options {
     pub sub_langs: Option<String>,
     pub sponsorblock_remove: Option<String>,
     pub section: Option<String>,
+    pub fast_cut: bool,
+    pub staging_dir: Option<String>,
+    pub native_http: bool,
+    pub http_connections: u32,
     pub open: bool,
     pub audio: bool,
     pub resume: bool,
@@ -64,6 +68,8 @@ pub struct Options {
     pub media_url: Option<String>,
     /// Position inside a playlist while one entry downloads.
     pub entry_index: Option<u64>,
+    /// Direct entry page from a flat playlist, preserving the parent request identity.
+    pub entry_url: Option<String>,
     pub playlist_title: Option<String>,
 }
 
@@ -98,6 +104,10 @@ impl Options {
             "subLangs" => some(&self.sub_langs),
             "sponsorblockRemove" => some(&self.sponsorblock_remove),
             "section" => some(&self.section),
+            "fastCut" => flag(self.fast_cut),
+            "stagingDir" => some(&self.staging_dir),
+            "nativeHttp" => flag(self.native_http),
+            "httpConnections" => Some(self.http_connections.into()),
             "open" => flag(self.open),
             "audio" => flag(self.audio),
             "resume" => flag(self.resume),
@@ -132,7 +142,11 @@ impl Options {
     /// Settings safe to persist in a retry job: no cookies, browser sessions,
     /// profile names, URLs or discovered media addresses.
     pub fn public(&self) -> Map<String, Value> {
-        const KEYS: [&str; 49] = [
+        const KEYS: [&str; 53] = [
+            "fastCut",
+            "stagingDir",
+            "nativeHttp",
+            "httpConnections",
             "quality",
             "output",
             "rename",
@@ -193,6 +207,9 @@ impl Options {
             }
         }
         map.insert("output".into(), Value::String(crate::paths::display(crate::paths::resolve(&self.output))));
+        if let Some(directory) = self.staging_dir.as_deref().filter(|directory| *directory != "output") {
+            map.insert("stagingDir".into(), Value::String(crate::paths::display(crate::paths::resolve(directory))));
+        }
         map
     }
 

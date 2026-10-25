@@ -36,6 +36,9 @@ pub(super) fn download_settings(options: &Options) -> Value {
     settings.insert("embedThumbnail".into(), options.embed_thumbnail.into());
     settings.insert("sponsorblockRemove".into(), text_or_null(&options.sponsorblock_remove));
     settings.insert("section".into(), text_or_null(&options.section));
+    if options.fast_cut {
+        settings.insert("fastCut".into(), true.into());
+    }
     if options.auto_subs {
         settings.insert("autoSubs".into(), true.into());
     }

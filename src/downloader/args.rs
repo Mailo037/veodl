@@ -22,10 +22,10 @@ pub(super) fn backend_args(options: &Options, backend: &Backend) -> Vec<String> 
     if options.incognito {
         args.push("--no-cache-dir".into());
     }
-    if !options.playlist {
+    if !options.playlist || options.entry_url.is_some() {
         args.push("--no-playlist".into());
     }
-    if let Some(index) = options.entry_index {
+    if let Some(index) = options.entry_index.filter(|_| options.entry_url.is_none()) {
         args.extend(["--playlist-items".into(), index.to_string()]);
     }
     args.extend(["--concurrent-fragments".into(), options.concurrent_fragments.to_string()]);
@@ -111,7 +111,10 @@ pub(super) fn media_args(options: &Options, quality: &QualityChoice) -> Vec<Stri
         args.extend(["--sponsorblock-remove".into(), categories.clone()]);
     }
     if let Some(section) = options.section.as_ref().filter(|value| !value.is_empty()) {
-        args.extend(["--download-sections".into(), section.clone(), "--force-keyframes-at-cuts".into()]);
+        args.extend(["--download-sections".into(), section.clone()]);
+        if !options.fast_cut {
+            args.push("--force-keyframes-at-cuts".into());
+        }
     }
     args
 }

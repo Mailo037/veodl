@@ -20,6 +20,36 @@ use crate::utils::{available_heights, sanitize_title};
 
 use super::*;
 
+/// Raw extractor data can contain signed URLs and headers. Keep it in an
+/// exclusive private file only while the child process needs it.
+pub(super) struct ExtractionFile(PathBuf);
+
+impl ExtractionFile {
+    pub fn write(staging: &Path, metadata: &Metadata) -> Result<Option<Self>> {
+        use std::io::Write;
+        let Some(extraction) = &metadata.extraction else { return Ok(None) };
+        let file = Self(staging.join(format!("extractor-{}.json", crate::state::uuid())));
+        let mut handle = crate::state::create_private(&file.0)?;
+        serde_json::to_writer(&mut handle, extraction.as_ref())?;
+        handle.flush()?;
+        Ok(Some(file))
+    }
+
+    pub fn path(&self) -> String {
+        paths::display(&self.0)
+    }
+}
+
+impl Drop for ExtractionFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+pub(super) fn stale_extraction(error: &Error) -> bool {
+    re!(r"(?i)HTTP(?: Error)?\s*:?\s*(?:401|403|410)|expired|requested format.*not available|no video formats").is_match(&error.message)
+}
+
 /// Read video metadata once, with the same vetted arguments as a download.
 pub fn fetch_metadata(options: &Options, backend: &Backend, runner: &Runner, cancel: &Cancel, reporter: &dyn Reporter) -> Result<Metadata> {
     reporter.status("Reading video…");
@@ -29,7 +59,7 @@ pub fn fetch_metadata(options: &Options, backend: &Backend, runner: &Runner, can
         args.push("--flat-playlist".into());
     }
     args.push("--".into());
-    args.push(options.media_url.clone().unwrap_or_else(|| options.url.clone()));
+    args.push(options.entry_url.clone().or_else(|| options.media_url.clone()).unwrap_or_else(|| options.url.clone()));
     let result = (|| -> Result<Metadata> {
         let raw = runner(&backend.yt_dlp, &args, cancel, None)?;
         let mut metadata: Metadata = serde_json::from_str(&raw).map_err(|error| Error::msg(format!("The backend returned invalid metadata: {error}")))?;
@@ -42,6 +72,22 @@ pub fn fetch_metadata(options: &Options, backend: &Backend, runner: &Runner, can
                 .flatten()
                 .next()
                 .ok_or_else(|| Error::msg("The selected playlist entry is unavailable."))?;
+        }
+        // Keep flat playlist dumps lean. Single-video results retain all backend
+        // fields (headers, fragment tables, format IDs) for --load-info-json.
+        if !metadata.is_collection() {
+            let mut extraction: Value = serde_json::from_str(&raw)?;
+            if options.entry_index.is_some() && extraction.get("entries").is_some() {
+                extraction = extraction
+                    .get_mut("entries")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|entries| entries.iter_mut().find(|entry| entry.is_object()))
+                    .map(Value::take)
+                    .unwrap_or(Value::Null);
+            }
+            if extraction.is_object() {
+                metadata.extraction = Some(std::sync::Arc::new(extraction));
+            }
         }
         if !options.playlist && metadata.is_collection() {
             return Err(Error::msg("This URL is a collection. Add --playlist to download every entry."));

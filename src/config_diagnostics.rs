@@ -141,6 +141,8 @@ pub fn value_choices(key: &str, config: &Map<String, Value>) -> Vec<Value> {
         "timeout" => strings(&["30s", "45s", "1m", "2m", "5m"]),
         "concurrentDownloads" | "playlistConcurrency" => (1..=4).map(Value::from).collect(),
         "concurrentFragments" => (1..=64).map(Value::from).collect(),
+        "httpConnections" => (1..=16).map(Value::from).collect(),
+        "stagingDir" => strings(&["output"]),
         _ => Vec::new(),
     }
 }

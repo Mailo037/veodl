@@ -258,13 +258,46 @@ example through `veo config edit`. Enable it with `veo URL --profile kompatibel`
 
 - URL lists and batch files use `--concurrent-downloads 2` by default (range 1–4).
   Each playlist independently uses `--playlist-concurrency 2` (range 1–4).
-  The limits multiply when several playlists run at once. JSON emits one complete
+  The worker limits multiply when several playlists run at once, while media
+  connections share a host-local budget (normally `concurrentFragments`, or the
+  larger of that and `httpConnections` for eligible native HTTP transfers).
+  JSON emits one complete
   object per URL in completion order; the `url` field identifies each result.
 - Adaptive concurrency is on by default. After the backend's own retries are exhausted,
   HTTP 429/5xx and temporary connection failures trigger at most two further attempts,
-  after 2 and 4 seconds. Fragment parallelism and future URL/playlist workers are reduced
-  for the rest of the run. Active downloads finish normally; format and quality stay fixed.
+  after 2 and 4 seconds. Capacity is reduced for that host, then recovers one step
+  after four successful operations. Workers wait for capacity and remain available
+  for later items. Active backend transfers retain their connection count until
+  the next attempt; format and quality stay fixed.
   Partials are continued on retry. Use `--no-adaptive-concurrency` to disable this.
+- `--native-http` is on by default for anonymous, direct HTTP(S) video files that
+  require no subtitle, metadata or section processing. Rust reuses HTTP connections
+  and writes byte ranges into disjoint offsets of one file, avoiding an assembly
+  copy. `--http-connections 4` controls native connections (1–16); the shared host
+  budget may reduce the effective count. Files smaller than 8 MiB use one range.
+  A strong ETag and valid byte-range responses are required for ranged resume;
+  changed ETags discard partial data. Servers without range support or a strong
+  validator use a full stream. Unsupported responses fall back to yt-dlp.
+  Cookies, custom authentication headers, multiple formats and transformations
+  continue through yt-dlp. Use `--no-native-http` to force that path.
+- Single-video extraction results are reused through a private temporary info
+  file, removed when yt-dlp exits. Expired media information is refreshed. Flat
+  playlists use direct entry page URLs when available, preserving entry indices
+  for naming, selection and retry. Raw extraction results are never archived.
+- `--staging-dir output` stages under `<output>/.veo-staging`, so the final save can
+  use a hard link on supported filesystems instead of copying across drives.
+  `--staging-dir D:/veo-cache` chooses a specific staging directory. The default
+  remains local-cache staging, which can work better for slow network/cloud drives.
+  Explicit roots are registered for expiration cleanup and `veo flush`; flush
+  removes only veo partial directories and keeps saved media. Incognito creates
+  an unregistered private child directory and removes it after the attempt.
+- `--section "*10:00-12:00" --fast-cut` skips forced keyframes for a faster cut
+  aligned to nearby existing keyframes. Start/end positions can be less precise.
+  Omit `--fast-cut` to keep precise cuts. This setting changes download identity,
+  so a previous precise-cut result cannot be reused as a fast-cut result.
+- `--verify` reuses the compatibility probe only when saving preserves the exact
+  file identity, size and modification time. Converted files, copies and retained
+  transfer retries receive a fresh probe.
 - `--check-space` checks cache and destination free space before media transfer. Known
   sizes include conservative room for merge output and a destination copy, plus space
   reserved by concurrent downloads in the same process. Unknown sizes are reported as
@@ -490,6 +523,7 @@ Supported keys: `output`, `quality`, `format`, `rename`, `audio`, `open`, `resum
 `closestQuality`, `cookies`, `cookiesFromBrowser`, `playlist`, `concurrentFragments`,
 `experimentalFragments`, `playlistConcurrency`, `recode`, `compatible`, `concurrentDownloads`, `adaptiveConcurrency`,
 `filenameTemplate`, `folderTemplate`, `checkSpace`, `timings`, `color`,
+`nativeHttp`, `httpConnections`, `stagingDir`, `fastCut`,
 `subs`, `autoSubs`, `subLangs`, `subFormat`, `embedSubs`, `embedMetadata`, `embedThumbnail`, `sponsorblockRemove`, `verify`,
 `section`, `json`. An explicit command-line flag always wins over a stored default. An
 unknown key produces a warning; invalid JSON or a wrong value type is an error, because

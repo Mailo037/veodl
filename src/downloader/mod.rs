@@ -5,6 +5,7 @@ mod collection;
 mod deps;
 mod keys;
 mod listing;
+mod native;
 mod quality;
 mod runner;
 mod single;

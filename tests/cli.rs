@@ -68,6 +68,8 @@ impl Sandbox {
             .env("VEO_YT_DLP_PATH", tools.join(exe("yt-dlp")))
             .env("VEO_FFMPEG_PATH", &tools)
             .env("VEO_NO_UPDATE_CHECK", "1")
+            .env("VEO_FAKE_LOG", self.path("backend-calls.jsonl"))
+            .env("VEO_FAKE_PROBE_LOG", self.path("probe-calls.jsonl"))
             .env("VEO_CONFIG", self.path("config.json"))
             .env("LOCALAPPDATA", self.path("cache"))
             .env("XDG_CACHE_HOME", self.path("cache"))
@@ -208,6 +210,83 @@ fn playlists_audio_subtitles_and_naming() {
     ]);
     let saved = PathBuf::from(json_lines(&templated)[0]["files"][0].as_str().unwrap().to_string());
     assert!(saved.ends_with(Path::new("Fixture Channel").join("2024").join("001 - Fixture Video.mp4")), "{}", saved.display());
+}
+
+fn backend_calls(sandbox: &Sandbox) -> Vec<Vec<String>> {
+    fs::read_to_string(sandbox.path("backend-calls.jsonl")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+}
+
+#[test]
+fn reuses_complete_metadata_and_refreshes_expired_downloads() {
+    let sandbox = Sandbox::new("reuse-metadata");
+    let output = sandbox.run(&["https://example.com/v", "--json", "-o", &sandbox.arg("out")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = backend_calls(&sandbox);
+    assert_eq!(calls.iter().filter(|args| args.iter().any(|arg| arg == "--dump-single-json")).count(), 1);
+    assert_eq!(calls.iter().filter(|args| args.iter().any(|arg| arg == "--load-info-json")).count(), 1);
+    let info_file = calls.iter().find_map(|args| args.iter().position(|arg| arg == "--load-info-json").map(|index| &args[index + 1])).unwrap();
+    assert!(!Path::new(info_file).exists(), "raw extraction must be removed after the child exits");
+
+    let output = sandbox.run(&["https://example.com/expired", "--json", "-o", &sandbox.arg("fresh")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("Refreshing expired media information"));
+    let calls = backend_calls(&sandbox);
+    assert!(calls.iter().any(|args| args.last().is_some_and(|arg| arg == "https://example.com/expired") && args.iter().any(|arg| arg == "--force-overwrites")));
+}
+
+#[test]
+fn playlists_extract_entry_urls_instead_of_rescanning_the_collection() {
+    let sandbox = Sandbox::new("direct-playlist-entries");
+    let output = sandbox.run(&["https://example.com/playlist", "--playlist", "--json", "-o", &sandbox.arg("out")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let calls = backend_calls(&sandbox);
+    assert_eq!(calls.iter().filter(|args| args.last().is_some_and(|arg| arg == "https://example.com/playlist")).count(), 1);
+    for index in 1..=3 {
+        assert!(calls.iter().any(|args| args.last().is_some_and(|arg| arg == &format!("https://example.com/e{index}"))));
+    }
+}
+
+#[test]
+fn output_staging_is_registered_and_verification_reuses_the_hardlinked_probe() {
+    let sandbox = Sandbox::new("output-staging");
+    let output = sandbox.run(&["https://example.com/v", "--staging-dir", "output", "--verify", "--json", "-o", &sandbox.arg("out")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(json_lines(&output)[0]["verified"], true);
+    let probes = fs::read_to_string(sandbox.path("probe-calls.jsonl")).unwrap();
+    assert_eq!(probes.lines().count(), 1, "compatibility and verification share one probe for an unchanged hard link");
+    let staging = sandbox.path("out/.veo-staging");
+    assert!(staging.join(".veo-staging-root.json").exists());
+    let calls = backend_calls(&sandbox);
+    let info_file = calls.iter().find_map(|args| args.iter().position(|arg| arg == "--load-info-json").map(|index| &args[index + 1])).unwrap();
+    assert!(Path::new(info_file).starts_with(&staging));
+
+    // Flush only registered, unlocked veo partials; saved media and unrelated
+    // directories remain. This fixture emulates a retained interrupted transfer.
+    let name = ".veo-part-0123456789abcdef01234567";
+    let partial = staging.join(name);
+    fs::create_dir(&partial).unwrap();
+    fs::write(partial.join("job.json"), r#"{"version":1,"requestKey":"0123456789abcdef01234567"}"#).unwrap();
+    fs::create_dir(staging.join("unrelated")).unwrap();
+    let flushed = sandbox.run(&["flush"]);
+    assert!(flushed.status.success(), "{}", stderr(&flushed));
+    assert!(!partial.exists());
+    assert!(staging.join("unrelated").exists());
+    assert!(Path::new(json_lines(&output)[0]["files"][0].as_str().unwrap()).exists());
+}
+
+#[test]
+fn fast_cuts_are_explicit_and_survive_config_and_retry_serialization() {
+    let sandbox = Sandbox::new("fast-cut");
+    let output = sandbox.run(&["https://example.com/v", "--section", "*1-2", "--fast-cut", "--json", "-o", &sandbox.arg("fast")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!backend_calls(&sandbox).iter().any(|args| args.iter().any(|arg| arg == "--force-keyframes-at-cuts")));
+    let invalid = sandbox.run(&["https://example.com/v", "--fast-cut", "--json"]);
+    assert!(!invalid.status.success());
+    let precise = sandbox.run(&["https://example.com/v", "--section", "*1-2", "--json", "-o", &sandbox.arg("precise")]);
+    assert!(precise.status.success(), "{}", stderr(&precise));
+    assert!(backend_calls(&sandbox).iter().any(|args| args.iter().any(|arg| arg == "--force-keyframes-at-cuts")));
+    let invalid = sandbox.run(&["https://example.com/v", "--http-connections", "17", "--json"]);
+    assert!(!invalid.status.success());
 }
 
 #[test]

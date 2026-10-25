@@ -203,6 +203,17 @@ pub fn parse_cli(args: &[String], config: &Map<String, Value>) -> Result<Options
         return Err(Error::msg("--recode requires --format and video mode."));
     }
     let section = text(&values, "section");
+    let staging_dir = text(&values, "staging-dir");
+    if staging_dir.as_ref().is_some_and(|path| path.trim().is_empty() || path.contains('\0')) {
+        return Err(Error::msg("--staging-dir requires a nonempty directory path or 'output'."));
+    }
+    let http_connections = parse_number(&text(&values, "http-connections").unwrap_or_else(|| "4".into()));
+    if !(1.0..=16.0).contains(&http_connections) || http_connections.fract() != 0.0 {
+        return Err(Error::msg("--http-connections must be a whole number between 1 and 16."));
+    }
+    if flag(&values, "fast-cut") && section.is_none() {
+        return Err(Error::msg("--fast-cut requires --section."));
+    }
     if section.as_ref().is_some_and(|section| !re!(r"^[*0-9]").is_match(js_trim(section))) {
         return Err(Error::msg("--section requires a range such as \"*10:00-12:00\" or \"10:00-12:00\"."));
     }
@@ -241,6 +252,10 @@ pub fn parse_cli(args: &[String], config: &Map<String, Value>) -> Result<Options
         sub_langs: text(&values, "sub-langs"),
         sponsorblock_remove: sponsor.map(|value| js_trim(&value).to_string()),
         section: section.map(|value| js_trim(&value).to_string()),
+        fast_cut: flag(&values, "fast-cut"),
+        staging_dir,
+        native_http: flag(&values, "native-http"),
+        http_connections: http_connections as u32,
         open: flag(&values, "open"),
         audio,
         resume: flag(&values, "resume"),

@@ -10,6 +10,11 @@ use serde_json::{Map, Value};
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Metadata {
+    /// Full extractor result, retained only for this invocation, never archived.
+    #[serde(skip)]
+    pub extraction: Option<std::sync::Arc<Value>>,
+    #[serde(deserialize_with = "text", skip_serializing_if = "Option::is_none")]
+    pub webpage_url: Option<String>,
     #[serde(deserialize_with = "text", skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(deserialize_with = "text", skip_serializing_if = "Option::is_none")]

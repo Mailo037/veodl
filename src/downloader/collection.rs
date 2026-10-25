@@ -35,11 +35,11 @@ pub(super) fn download_collection(options: &Options, metadata: &Metadata, deps: 
     let fatal: Mutex<Option<Error>> = Mutex::new(None);
     let playlist_title = first(&[&metadata.title, &metadata.id]).map(str::to_string);
     std::thread::scope(|scope| {
-        for worker in 0..(concurrency as usize).min(entries.len()) {
+        for _worker in 0..(concurrency as usize).min(entries.len()) {
             let (entries, results, failures, entry_timings, saved, skipped, notify, next, fatal, child_deps, reporter, playlist_title) =
                 (&entries, &results, &failures, &entry_timings, &saved, &skipped, &notify, &next, &fatal, &child_deps, &reporter, &playlist_title);
             scope.spawn(move || {
-                while next.load(Ordering::SeqCst) < entries.len() && (worker as u32) < deps.adaptive.reduced(concurrency) {
+                while next.load(Ordering::SeqCst) < entries.len() {
                     if let Err(error) = deps.cancel.check() {
                         fatal.lock().unwrap().get_or_insert(error);
                         return;
@@ -58,7 +58,12 @@ pub(super) fn download_collection(options: &Options, metadata: &Metadata, deps: 
                         Some(rename) if !rename.is_empty() => Some(format!("{rename} - {index:03}")),
                         _ => None,
                     };
-                    let item_options = Options { entry_index: Some(index), playlist_title: playlist_title.clone(), rename, ..options.clone() };
+                    let entry_url = item
+                        .entry
+                        .and_then(|entry| entry.webpage_url.as_ref().or(entry.url.as_ref()))
+                        .filter(|url| crate::utils::validate_url(url).is_ok())
+                        .cloned();
+                    let item_options = Options { entry_index: Some(index), entry_url, playlist_title: playlist_title.clone(), rename, ..options.clone() };
                     let outcome = match download(&item_options, &child_deps.with_reporter(child)) {
                         Ok(result) => {
                             *results[offset].lock().unwrap() = result.files.clone();

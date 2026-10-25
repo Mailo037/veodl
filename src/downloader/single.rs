@@ -42,10 +42,15 @@ pub fn download(options: &Options, deps: &Deps) -> Result<DownloadResult> {
 /// Like `download`, reusing metadata already read for the same request (saves
 /// one full backend start, typically one to three seconds per URL).
 pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata>) -> Result<DownloadResult> {
+    let adaptive = deps.adaptive.for_url(options.entry_url.as_deref().unwrap_or(&options.url));
+    let deps = &Deps { adaptive: &adaptive, skip_cache_cleanup: deps.skip_cache_cleanup, ..deps.with_reporter(deps.reporter.clone()) };
     let timer = PhaseTimer::default();
     let cancel = deps.cancel;
     let reporter = deps.reporter.as_ref();
     let local_root = paths::resolve(&deps.local_root);
+    if options.staging_dir.is_some() && !options.incognito {
+        download_cache::register_root(&local_root, &paths::cache_base())?;
+    }
     if !deps.skip_cache_cleanup {
         download_cache::cleanup(&local_root, state::now_ms())?;
     }
@@ -66,6 +71,7 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
         (Some(manifest), _) => manifest.metadata.clone(),
         (None, Some(metadata)) => announce(reporter, metadata),
         (None, None) => adaptive_run(options.adaptive_concurrency, deps.adaptive, cancel, reporter, Some(&timer), deps.wait, |_| {
+            let _connection = deps.adaptive.acquire(1, options.concurrent_fragments.max(options.http_connections), 1, options.adaptive_concurrency, cancel)?;
             fetch_metadata(options, backend.as_ref().expect("backend"), deps.runner, cancel, reporter)
         })?,
     };
@@ -212,13 +218,31 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
             timer.switch("download");
             let backend = backend.as_ref().expect("backend for downloads");
             let template = staging_template(&staging, false);
-            staged = adaptive_run(options.adaptive_concurrency, deps.adaptive, cancel, reporter, Some(&timer), deps.wait, |attempt| {
+            let native_source = super::native::source_url(options, &metadata);
+            let transfer_host = deps.adaptive.for_url(native_source.as_deref().unwrap_or(options.entry_url.as_deref().unwrap_or(&options.url)));
+            staged = adaptive_run(options.adaptive_concurrency, &transfer_host, cancel, reporter, Some(&timer), deps.wait, |attempt| {
                 let mut candidates: Vec<String> = Vec::new();
+                let requested = if native_source.is_some() { options.http_connections } else { options.concurrent_fragments };
+                let connections = transfer_host.acquire(
+                    requested,
+                    options.concurrent_fragments.max(if native_source.is_some() { options.http_connections } else { 1 }),
+                    options
+                        .concurrent_downloads
+                        .max(1)
+                        .min(options.urls.len().max(1) as u32)
+                        .saturating_mul(if options.playlist { options.playlist_concurrency.max(1) } else { 1 })
+                        .min(4),
+                    options.adaptive_concurrency,
+                    cancel,
+                )?;
                 let attempt_options = Options {
                     resume: options.resume || attempt > 0,
-                    concurrent_fragments: deps.adaptive.reduced(options.concurrent_fragments),
+                    concurrent_fragments: connections.count.min(options.concurrent_fragments.max(1)),
                     ..options.clone()
                 };
+                if let Some(files) = super::native::download(&attempt_options, &metadata, &staging, cancel, reporter, connections.count)? {
+                    return Ok(files);
+                }
                 let mut args = backend_args(&attempt_options, backend);
                 args.extend(media_args(&attempt_options, &quality));
                 // A failed process may have left a final filename: --no-overwrites
@@ -226,7 +250,13 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
                 if unconfirmed || attempt > 0 {
                     args.push("--force-overwrites".into());
                 }
-                args.extend(["-o".into(), template.clone(), "--".into(), options.media_url.clone().unwrap_or_else(|| options.url.clone())]);
+                args.extend(["-o".into(), template.clone()]);
+                let extraction = if attempt == 0 { ExtractionFile::write(&staging, &metadata)? } else { None };
+                let plain_args = args.clone();
+                match &extraction {
+                    Some(extraction) => args.extend(["--load-info-json".into(), extraction.path()]),
+                    None => args.extend(["--".into(), options.entry_url.clone().or_else(|| options.media_url.clone()).unwrap_or_else(|| options.url.clone())]),
+                }
                 let mut on_line = |line: &str| -> Result<()> {
                     if let Some(rest) = line.strip_prefix("veo-progress:") {
                         if timer.phase() != "download" {
@@ -270,7 +300,19 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
                     }
                     Ok(())
                 };
-                (deps.runner)(&backend.yt_dlp, &args, cancel, Some(&mut on_line))?;
+                if let Err(error) = (deps.runner)(&backend.yt_dlp, &args, cancel, Some(&mut on_line)) {
+                    if extraction.is_none() || !stale_extraction(&error) || cancel.is_cancelled() {
+                        return Err(error);
+                    }
+                    reporter.status("Refreshing expired media information…");
+                    let mut args = plain_args;
+                    args.extend([
+                        "--force-overwrites".into(),
+                        "--".into(),
+                        options.entry_url.clone().or_else(|| options.media_url.clone()).unwrap_or_else(|| options.url.clone()),
+                    ]);
+                    (deps.runner)(&backend.yt_dlp, &args, cancel, Some(&mut on_line))?;
+                }
                 Ok(unique(&candidates))
             })?;
             current.ready = staged.clone();
@@ -284,6 +326,7 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
         if staged.is_empty() {
             return Err(Error::msg("The backend finished without producing a file."));
         }
+        let mut probes = std::collections::HashMap::new();
         if !options.audio && current.compatibility_checked != Some(true) && (ready_manifest.is_none() || options.compatible) {
             timer.switch("processing");
             let tools = match &backend {
@@ -291,7 +334,13 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
                 None => (deps.backend)(cancel, reporter)?,
             };
             for file in staged.iter_mut() {
-                *file = paths::display(ensure_compatibility(Path::new(file), &tools, deps.compatibility_runner, cancel, options.compatible, reporter)?);
+                let mut probe = None;
+                *file =
+                    paths::display(ensure_compatibility(Path::new(file), &tools, deps.compatibility_runner, cancel, options.compatible, reporter, &mut probe)?);
+                if let (Some(probe), Some(identity)) = (probe, crate::fsutil::identity_of(Path::new(file))) {
+                    let info = fs::metadata(&*file)?;
+                    probes.insert(file.clone(), (identity, info.len(), info.modified().ok(), probe));
+                }
             }
             current.ready = staged.clone();
             current.compatibility_checked = Some(true);
@@ -325,7 +374,19 @@ pub fn download_with(options: &Options, deps: &Deps, prefetched: Option<Metadata
         }
         if options.verify {
             reporter.status("Verifying saved media…");
-            if let Err(mut error) = verify_files(&files, options, deps) {
+            let verified = files.iter().filter(|file| is_media_file(file)).try_for_each(|file| {
+                let reused = current.files.iter().find(|item| &item.destination == file).and_then(|item| probes.get(&item.source));
+                match reused {
+                    Some((identity, size, modified, probe))
+                        if crate::fsutil::identity_of(Path::new(file)) == Some(*identity)
+                            && fs::metadata(file).is_ok_and(|info| info.len() == *size && info.modified().ok() == *modified) =>
+                    {
+                        crate::inspect_media::verify_probe(probe, Path::new(file), options.audio)
+                    }
+                    _ => (deps.verifier)(Path::new(file), options.audio, cancel),
+                }
+            });
+            if let Err(mut error) = verified {
                 error.files = files.clone();
                 error.verification_failed = true;
                 return Err(error);
