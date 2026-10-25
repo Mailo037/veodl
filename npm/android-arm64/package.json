@@ -1,6 +1,6 @@
 {
   "name": "veodl-android-arm64",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "The veo binary for android arm64 (aarch64-linux-android). Install veodl instead.",
   "license": "MIT",
   "repository": {

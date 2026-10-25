@@ -969,9 +969,24 @@ static Linux x64/ARM64 (musl) and Android ARM64 and uploads the eight npm tarbal
 as an Actions artifact. The `rust-port` branch also triggers this build.
 
 GitHub builds all seven native targets and bundles them into the single veodl npm
-package. No platform packages or npm credentials are needed on GitHub. Download
-its npm-2.0.0 artifact and publish locally with npm run release. Users only need
-npm install -g veodl; the launcher automatically selects the bundled binary.
+package. Branch pushes and manual workflow runs build and upload the npm-package
+artifact without publishing. Pushing a matching version tag (for example,
+v2.0.1) additionally publishes the verified tarball using npm trusted publishing
+with OIDC. Configure Mailo037/veodl and release.yml as the npm trusted publisher,
+with direct npm publishing allowed; no npm token or GitHub environment is needed.
+The publish job alone has id-token: write permission and uses Node 24 and npm 11.
+
+After committing and pushing the intended release changes, create and push the tag:
+
+```sh
+git tag -a v2.0.1 -m "Release v2.0.1"
+git push origin v2.0.1
+```
+
+Wait for the complete workflow, including the publish job, and check npm's latest
+tag before announcing the release. An already published version cannot be reused.
+For a local fallback, download the npm-package artifact and publish its verified
+tarball with npm publish; users always install with npm install -g veodl.
 
 Modules mirror the commands and stay small (larger ones are directories of focused
 submodules): argument parsing and dispatch (`src/cli/`), configuration (`src/config*.rs`,

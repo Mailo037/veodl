@@ -1,6 +1,6 @@
 {
   "name": "veodl-darwin-arm64",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "The veo binary for darwin arm64 (aarch64-apple-darwin). Install veodl instead.",
   "license": "MIT",
   "repository": {

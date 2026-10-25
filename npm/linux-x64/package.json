@@ -1,6 +1,6 @@
 {
   "name": "veodl-linux-x64",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "The veo binary for linux x64 (x86_64-unknown-linux-musl). Install veodl instead.",
   "license": "MIT",
   "repository": {

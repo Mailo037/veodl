@@ -38,4 +38,4 @@ if (!process.argv.includes('--metadata')) for (const platform of ['win32-x64','w
  const binary = 'package/native/' + platform + '/' + (platform.startsWith('win32') ? 'veo.exe' : 'veo');
  assert(contents.get(binary)?.length > 1000000, 'Missing native binary: ' + binary);
 }
-console.log('PASS: self-contained veodl ' + pkg.version + ', all seven binaries included.');
+console.log('PASS: veodl ' + pkg.version + (process.argv.includes('--metadata') ? ', package metadata verified.' : ', all seven binaries included.'));

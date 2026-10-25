@@ -1,7 +1,7 @@
-name: Build release packages
+name: Build and release veo
 
-# Push a tag such as v2.0.0 (matching Cargo.toml) to build every platform
-# binary and prepare tarballs for local npm publication. No npm credentials.
+# Branch pushes and manual runs build only. Matching version tags also publish
+# the single veodl package using the npm trusted publisher for release.yml.
 on:
   push:
     branches: [rust-port]
@@ -47,15 +47,15 @@ jobs:
         run: |
           pip install ziglang
           cargo install --locked cargo-zigbuild
-          cargo zigbuild --release --target ${{ matrix.target }}
+          cargo zigbuild --locked --release --target ${{ matrix.target }}
       - name: Build (Android NDK)
         if: matrix.ndk
         run: |
           cargo install --locked cargo-ndk
-          cargo ndk --target ${{ matrix.target }} --platform 24 build --release
+          cargo ndk --target ${{ matrix.target }} --platform 24 build --locked --release
       - name: Build
         if: ${{ !matrix.zig && !matrix.ndk }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Stage binary
         shell: bash
         run: |
@@ -94,7 +94,38 @@ jobs:
           mv veodl-*.tgz release/npm/
       - uses: actions/upload-artifact@v4
         with:
-          name: npm-2.0.0
+          name: npm-package
           path: release/npm/
           if-no-files-found: error
           retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: npm-publish-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Install npm with OIDC support
+        run: npm install --global npm@11
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: release/npm
+      - name: Verify and publish the built tarball
+        shell: bash
+        run: |
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')
+          test "$GITHUB_REF_NAME" = "v$version"
+          archive="release/npm/veodl-$version.tgz"
+          node scripts/check-package.js "$archive"
+          npm publish "$archive" --access public --tag latest

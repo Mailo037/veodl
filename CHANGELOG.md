@@ -2,6 +2,12 @@
 
 All notable changes to veo. This project follows [Semantic Versioning](https://semver.org/).
 
+## 2.0.1
+
+### Changed
+
+- Release tags build and verify all seven native targets, then publish the single `veodl` npm package through GitHub Actions using OIDC trusted publishing. No npm token is stored in GitHub.
+
 ## 2.0.0
 
 ### Changed
