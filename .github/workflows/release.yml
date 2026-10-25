@@ -1,13 +1,15 @@
-name: Release
+name: Build release packages
 
 # Push a tag such as v2.0.0 (matching Cargo.toml) to build every platform
-# binary, attach them to a GitHub release and publish the npm packages.
+# binary and prepare tarballs for local npm publication. No npm credentials.
 on:
   push:
+    branches: [rust-port]
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,8 +17,6 @@ env:
 jobs:
   verify:
     uses: ./.github/workflows/ci.yml
-    permissions:
-      contents: read
 
   build:
     needs: verify
@@ -36,6 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: test "v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" = "${GITHUB_REF_NAME}"
       - uses: dtolnay/rust-toolchain@stable
@@ -66,7 +67,7 @@ jobs:
           name: ${{ matrix.package }}
           path: dist/
 
-  publish:
+  package:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -81,27 +82,21 @@ jobs:
       - name: Assemble packages
         run: |
           node scripts/npm-packages.mjs --check
-          mkdir -p release
+          mkdir -p release/npm
           for dir in artifacts/*; do
             package=$(basename "$dir")
             mkdir -p "npm/$package/bin"
             cp "$dir"/* "npm/$package/bin/"
             chmod 755 "npm/$package/bin/"*
-            for file in "$dir"/*; do
-              extension="${file##*.}"; [ "$extension" = "exe" ] && suffix=.exe || suffix=
-              cp "$file" "release/veo-${GITHUB_REF_NAME}-$package$suffix"
-            done
+            npm pack "./npm/$package" --pack-destination release/npm
           done
-          (cd release && sha256sum * > SHA256SUMS)
           npm pack
           node scripts/check-package.js
-      - name: Publish platform packages, then veodl
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          for dir in npm/*/; do npm publish "$dir" --access public; done
-          npm publish --access public
-      - uses: softprops/action-gh-release@v2
+          mv veodl-*.tgz release/npm/
+          node scripts/release-manifest.mjs
+      - uses: actions/upload-artifact@v4
         with:
-          files: release/*
-          generate_release_notes: true
+          name: npm-2.0.0
+          path: release/npm/
+          if-no-files-found: error
+          retention-days: 30

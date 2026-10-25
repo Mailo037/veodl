@@ -965,19 +965,18 @@ source again. It downloads no third-party video.
 Continuous integration runs formatting, Clippy, the unit and offline tests, and the smoke
 test on Windows, macOS and Linux, and verifies the npm package. Pushing a tag `vX.Y.Z`
 (matching `Cargo.toml`) builds the binaries for Windows x64/ARM64, macOS x64/ARM64,
-static Linux x64/ARM64 (musl) and Android ARM64, attaches them to a GitHub release and
-publishes the npm packages (`NPM_TOKEN` secret).
+static Linux x64/ARM64 (musl) and Android ARM64 and uploads the eight npm tarballs
+as an Actions artifact. The `rust-port` branch also triggers this build.
 
-To prepare a release, configure the repository's `NPM_TOKEN` secret with permission
-to publish `veodl` and its seven platform packages (including automated publishing
-under your npm account's 2FA policy), then commit the intended release changes.
-Run `npm run release -- --check` for a read-only preflight, followed by
-`npm run release` to create and push the version tag from the current commit.
-The release workflow first runs CI on Windows, macOS and Linux; publication starts
-only after verification and all seven native builds succeed. Follow its result in
-GitHub Actions. Do not publish just the root package with `npm publish`: its pinned
-platform packages must be published first. The release command requires a clean
-working tree and refuses an existing version tag.
+GitHub only builds and packages; it needs no npm token and never publishes to npm.
+After the build succeeds, download its `npm-2.0.0` artifact with
+`gh run download <run-id> --name npm-2.0.0 --dir release/npm`.
+Run `npm run release -- --check` to verify all eight tarballs and their checksums.
+Then use `npm login` and `npm run release` locally: npm publishes the seven platform
+packages first and `veodl` last, using your local login and interactive npm
+authentication. Do not publish just the root package with `npm publish`.
+The build workflow first runs CI on Windows, macOS and Linux and requires all
+seven native builds to succeed before assembling the artifact.
 
 Modules mirror the commands and stay small (larger ones are directories of focused
 submodules): argument parsing and dispatch (`src/cli/`), configuration (`src/config*.rs`,

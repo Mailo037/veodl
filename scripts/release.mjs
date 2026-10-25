@@ -1,29 +1,28 @@
-// Publish through the platform-build workflow, never just the npm launcher.
+// Publish the verified, prebuilt tarballs locally using the user's npm login.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-
 process.chdir(fileURLToPath(new URL('../', import.meta.url)));
-const run = (command, args) => execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
 try {
   if (process.argv.slice(2).some(arg => arg !== '--check')) throw new Error('Usage: npm run release [-- --check]');
-  run(process.execPath, ['scripts/npm-packages.mjs', '--check']);
-  const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-  const tag = `v${version}`;
-  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('A stable release version is required.');
-  if (!readFileSync('CHANGELOG.md', 'utf8').split(/\r?\n/).includes(`## ${version}`)) throw new Error('Missing changelog entry.');
-  if (run('git', ['tag', '--list', tag])) throw new Error(`${tag} already exists locally.`);
-  if (run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`])) throw new Error(`${tag} already exists on origin.`);
-  const dirty = run('git', ['status', '--porcelain']);
-  console.log(`Release ${tag}: GitHub Actions builds all seven platforms and publishes npm packages.`);
-  if (process.argv.includes('--check')) {
-    console.log(dirty ? 'Preflight OK. Commit the preparation changes before releasing.' : 'Preflight OK. Working tree is clean.');
-    process.exit(0);
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const manifest = JSON.parse(readFileSync('release/npm/manifest.json', 'utf8'));
+  if (manifest.version !== pkg.version) throw new Error('Artifact version differs from package.json.');
+  const expected = [...Object.keys(pkg.optionalDependencies), pkg.name].map(name => `${name}-${pkg.version}.tgz`);
+  if (JSON.stringify(manifest.files.map(entry => entry.name)) !== JSON.stringify(expected)) throw new Error('Artifact must contain all seven platforms followed by veodl.');
+  for (const entry of manifest.files) {
+    const digest = createHash('sha256').update(readFileSync(`release/npm/${entry.name}`)).digest('hex');
+    if (digest !== entry.sha256) throw new Error(`Checksum mismatch: ${entry.name}`);
   }
-  if (dirty) throw new Error('Commit all intended release changes before running npm run release.');
-  run('git', ['tag', '-a', tag, '-m', `Release ${tag}`]);
-  console.log(run('git', ['push', 'origin', `refs/tags/${tag}`]));
-  console.log('Release workflow triggered. Check GitHub Actions for build and npm publication results.');
+  console.log(`Verified ${expected.length} npm tarballs for ${pkg.version}.`);
+  if (!process.argv.includes('--check')) {
+    if (!process.env.npm_execpath) throw new Error('Run this command through npm run release.');
+    for (const name of expected) {
+      console.log(`Publishing ${name}`);
+      execFileSync(process.execPath, [process.env.npm_execpath, 'publish', `release/npm/${name}`, '--access', 'public', '--tag', 'latest'], { stdio: 'inherit' });
+    }
+  }
 } catch (error) {
   console.error(`Release stopped: ${error.message}`);
   process.exitCode = 1;
