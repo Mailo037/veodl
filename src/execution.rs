@@ -66,13 +66,25 @@ impl Adaptive {
 
     fn back_off(&self) {
         self.state.successes.store(0, Ordering::SeqCst);
-        let _ = self.state.divisor.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| Some((current.max(1) * 2).min(16)));
+        self.update_divisor(|current| (current.max(1) * 2).min(16));
     }
 
     fn succeeded(&self) {
         if self.state.successes.fetch_add(1, Ordering::SeqCst) >= 3 {
             self.state.successes.store(0, Ordering::SeqCst);
-            let _ = self.state.divisor.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| Some((current / 2).max(1)));
+            self.update_divisor(|current| (current / 2).max(1));
+        }
+    }
+
+    // Use compare-exchange to support both Rust 1.85 and newer toolchains
+    // where fetch_update is deprecated in favor of try_update.
+    fn update_divisor(&self, update: impl Fn(u32) -> u32) {
+        let mut current = self.state.divisor.load(Ordering::SeqCst);
+        loop {
+            match self.state.divisor.compare_exchange_weak(current, update(current), Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => return,
+                Err(actual) => current = actual,
+            }
         }
     }
 }
