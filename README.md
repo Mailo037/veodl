@@ -968,6 +968,17 @@ test on Windows, macOS and Linux, and verifies the npm package. Pushing a tag `v
 static Linux x64/ARM64 (musl) and Android ARM64, attaches them to a GitHub release and
 publishes the npm packages (`NPM_TOKEN` secret).
 
+To prepare a release, configure the repository's `NPM_TOKEN` secret with permission
+to publish `veodl` and its seven platform packages (including automated publishing
+under your npm account's 2FA policy), then commit the intended release changes.
+Run `npm run release -- --check` for a read-only preflight, followed by
+`npm run release` to create and push the version tag from the current commit.
+The release workflow first runs CI on Windows, macOS and Linux; publication starts
+only after verification and all seven native builds succeed. Follow its result in
+GitHub Actions. Do not publish just the root package with `npm publish`: its pinned
+platform packages must be published first. The release command requires a clean
+working tree and refuses an existing version tag.
+
 Modules mirror the commands and stay small (larger ones are directories of focused
 submodules): argument parsing and dispatch (`src/cli/`), configuration (`src/config*.rs`,
 `src/config_editor/`), backend setup and updates (`src/backend/`, `src/tool_setup.rs`,

@@ -13,7 +13,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: verify
     name: ${{ matrix.package }}
     runs-on: ${{ matrix.os }}
     strategy:
